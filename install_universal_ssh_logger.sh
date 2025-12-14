@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG_OUT="/var/log/ssh_file_activity.log"
+# made using copilot
+
+LOG_OUT="/var/log/ssh_file_activity2.log" #test - change the name to see if the issue is fixed
 LOGGER_BIN="/usr/local/bin/ssh_cmd_logger.sh"
 PROFILE_SNIPPET="/etc/profile.d/ssh_command_logger.sh"
 ZSH_SNIPPET_DIR="/etc/zsh"
