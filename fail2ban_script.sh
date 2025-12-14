@@ -71,12 +71,12 @@ $INSTALL fail2ban || {
         $UPDATE
         $INSTALL fail2ban || {
             echo "Failed to install fail2ban even after enabling EPEL. Exiting."
-            exit 1
+            exit 1;
         }
     else
         echo "Fail2Ban installation failed. Exiting."
-        exit 1
-    }
+        exit 1;
+    fi;
 }
 
 echo "Enabling and starting fail2ban service..."
