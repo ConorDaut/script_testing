@@ -32,8 +32,8 @@ pm=$(detect_pm)
 if ! command -v auditctl >/dev/null 2>&1; then
   install_pkg "$pm" auditd || install_pkg "$pm" audit
 fi
-systemctl enable auditd
 systemctl start auditd
+systemctl enable auditd.service || true
 
 # --- Write rules (persist + immediate load) ---
 cat > "$RULES_FILE" <<'EOF'
