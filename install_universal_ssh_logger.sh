@@ -9,10 +9,9 @@ ZSH_SNIPPET_FILE="/etc/zsh/zshrc.d/ssh_command_logger.zsh"
 
 # 1) Prepare persistent, append-only log file
 touch "$LOG_OUT"
-chmod 600 "$LOG_OUT"
-if command -v chattr >/dev/null 2>&1; then
-  chattr +a "$LOG_OUT" || true
-fi
+chown root:root "$LOG_OUT"
+chmod 644 "$LOG_OUT"
+
 
 # 2) Command logger helper (used by hooks)
 cat > "$LOGGER_BIN" <<'EOF'
