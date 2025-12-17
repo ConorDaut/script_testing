@@ -28,7 +28,7 @@ elif command -v pacman >/dev/null 2>&1; then
     INSTALL="sudo pacman -Sy --noconfirm"
     UPDATE="sudo pacman -Sy --noconfirm"
 else
-    echo "Unsupported package manager. Install fail2ban manually."
+    echo "\033[38;5;208mUnsupported package manager. Install fail2ban manually.\033[0m"
     exit 1
 fi
 
@@ -56,7 +56,7 @@ elif [ "$CHOICE" == "3" ]; then
     echo "SSH service stopped."
     exit 0
 elif [ "$CHOICE" != "1" ]; then
-    echo "Invalid option. Exiting."
+    echo "\033[1;31mInvalid option. Exiting.\033[0m"
     exit 1
 fi
 
@@ -70,11 +70,11 @@ $INSTALL fail2ban || {
         sudo $PM install -y epel-release
         $UPDATE
         $INSTALL fail2ban || {
-            echo "Failed to install fail2ban even after enabling EPEL. Exiting."
+            echo "\033[1;31mFailed to install fail2ban even after enabling EPEL. Exiting.\033[0m"
             exit 1;
         }
     else
-        echo "Fail2Ban installation failed. Exiting."
+        echo "\033[1;31mFail2Ban installation failed. Exiting.\033[0m"
         exit 1;
     fi;
 }
@@ -124,4 +124,4 @@ else
     sudo service cron restart || sudo service crond restart
 fi
 
-echo "Setup complete. Fail2Ban is running, and ALL failed login IPs will be appended to $LOGFILE every minute."
+echo "\033[1;32mSetup complete. Fail2Ban is running, and ALL failed login IPs will be appended to $LOGFILE every minute.\033[0m"
