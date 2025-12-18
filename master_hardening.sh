@@ -27,6 +27,7 @@ error()   { echo -e "\033[1;31m[ERROR]\033[0m $*"; }
 # Run a single script with error handling
 run_script() {
     local script="$1"
+    local index="$2"
 
     if [[ ! -f "$script" ]]; then
         error "Script not found: $script"
@@ -40,7 +41,7 @@ run_script() {
         }
     fi
 
-    info "Running: $script"
+    info "Running script #$index: $script"
     bash "$script"
     local status=$?
 
@@ -64,10 +65,34 @@ prompt_continue() {
     done
 }
 
+# === MENU ===
+echo "======================================"
+echo "   Master Hardening Script Menu"
+echo "======================================"
+echo "Scripts to be executed:"
+for i in "${!HARDENING_SCRIPTS[@]}"; do
+    echo "  $((i+1)). ${HARDENING_SCRIPTS[$i]}"
+done
+echo "======================================"
+
+# Ask user how to run scripts
+while true; do
+    echo "Choose execution mode:"
+    echo "  1) Breaks between scripts (prompt after each)"
+    echo "  2) Run all scripts one after another (no breaks)"
+    read -rp "Enter choice [1-2]: " mode
+    case "$mode" in
+        1) BREAKS=true; break ;;
+        2) BREAKS=false; break ;;
+        *) echo "Invalid choice. Please enter 1 or 2." ;;
+    esac
+done
+
 # === MAIN EXECUTION LOOP ===
 info "Starting master hardening sequence..."
-for script in "${HARDENING_SCRIPTS[@]}"; do
-    run_script "$script"
+for i in "${!HARDENING_SCRIPTS[@]}"; do
+    script="${HARDENING_SCRIPTS[$i]}"
+    run_script "$script" "$((i+1))"
     status=$?
 
     if [[ $status -ne 0 ]]; then
@@ -76,9 +101,11 @@ for script in "${HARDENING_SCRIPTS[@]}"; do
         [[ "$choice" =~ ^[Nn]$ ]] && error "Aborting due to error." && exit 1
     fi
 
-    if ! prompt_continue; then
-        info "User chose to stop. Exiting."
-        exit 0
+    if [[ "$BREAKS" == true ]]; then
+        if ! prompt_continue; then
+            info "User chose to stop. Exiting."
+            exit 0
+        fi
     fi
 done
 
