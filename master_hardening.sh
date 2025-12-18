@@ -9,9 +9,8 @@
 # === CONFIGURATION SECTION ===
 # Add or remove script paths here
 HARDENING_SCRIPTS=(
-    "/path/to/hardening-script-1.sh"
-    "/path/to/hardening-script-2.sh"
-    "/path/to/hardening-script-3.sh"
+    "create_backup_admin_user.sh"
+    "fail2ban_script.sh"
 )
 
 # === FUNCTIONS ===
