@@ -4,6 +4,9 @@
 # Executes a list of hardening scripts sequentially with error handling
 # Works across Linux distros (Debian, RHEL, Arch, etc.)
 # Made with Copilot AI
+# Still needs more testing and room for improvement
+# Idea is it goes 1 by 1 down the list of hardening scripts
+# Ideally, it is modified depending on the user or the systems needed
 #
 
 # === CONFIGURATION SECTION ===
