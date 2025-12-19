@@ -3,8 +3,9 @@
 #   Mail Hardener (Postfix + Dovecot only)
 #   Features: Backup, Rollback, TLS Hardening
 #   Visual: Color-coded output + Error handling
-#   Made using Copilot AI
-#   For Rollback: sudo bash mail_hardener.sh --rollback
+#   Portable: Works on Debian/Ubuntu + Fedora/RHEL/CentOS
+#   Made with Copilot AI
+#   For rollback: sudo bash mail_hardener.sh --rollback
 # ============================================
 
 set -euo pipefail
@@ -39,6 +40,29 @@ require_root() {
 
 # --- Error Handling ---
 trap 'error "An unexpected error occurred on line $LINENO. Check logs or rollback."' ERR
+
+# --- Distro Detection ---
+detect_distro() {
+  if [[ -f /etc/os-release ]]; then
+    . /etc/os-release
+    case "$ID" in
+      ubuntu|debian)
+        PKG_INSTALL="apt-get install -y"
+        ;;
+      fedora|centos|rhel)
+        PKG_INSTALL="dnf install -y"
+        ;;
+      *)
+        error "Unsupported distro: $ID"
+        exit 1
+        ;;
+    esac
+    ok "Detected distro: $PRETTY_NAME"
+  else
+    error "Cannot detect distro."
+    exit 1
+  fi
+}
 
 backup_configs() {
   mkdir -p "$BACKUP_DIR"
@@ -76,6 +100,9 @@ rollback_latest() {
 
 # --- Postfix Hardening ---
 harden_postfix() {
+  info "Installing Postfix..."
+  $PKG_INSTALL postfix || warn "Postfix may already be installed."
+
   info "Hardening Postfix..."
   {
     cat <<'EOF' >> /etc/postfix/main.cf
@@ -111,6 +138,9 @@ EOF
 
 # --- Dovecot Hardening ---
 harden_dovecot() {
+  info "Installing Dovecot..."
+  $PKG_INSTALL dovecot || warn "Dovecot may already be installed."
+
   info "Hardening Dovecot..."
   {
     cat <<'EOF' >> /etc/dovecot/conf.d/10-ssl.conf
@@ -141,6 +171,7 @@ EOF
 
 # --- Main ---
 require_root
+detect_distro
 
 case "${1:-}" in
   --rollback)
