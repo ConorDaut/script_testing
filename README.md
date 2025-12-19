@@ -5,3 +5,4 @@ Most code made using Copilot AI.
 - fail2ban_script.sh works
 - master_hardening.sh works
 - harden_accounts.sh and install_ssh_command_logger.sh do not work as intended / need more work
+- mail_hardener.sh works on Ubuntu
