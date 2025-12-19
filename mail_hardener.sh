@@ -2,8 +2,9 @@
 # ============================================
 #   Mail Hardener (Postfix + Dovecot only)
 #   Features: Backup, Rollback, TLS Hardening
-#   Visual: Color-coded output
-#   Made with Copilot AI
+#   Visual: Color-coded output + Error handling
+#   Made using Copilot AI
+#   For Rollback: sudo bash mail_hardener.sh --rollback
 # ============================================
 
 set -euo pipefail
@@ -28,11 +29,26 @@ ok()    { echo -e "${GREEN}[OK]${RESET} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${RESET} $*"; }
 error() { echo -e "${RED}[ERROR]${RESET} $*"; }
 
+# --- Root Privilege Check ---
+require_root() {
+  if [[ "$EUID" -ne 0 ]]; then
+    error "This script must be run as root (sudo)."
+    exit 1
+  fi
+}
+
+# --- Error Handling ---
+trap 'error "An unexpected error occurred on line $LINENO. Check logs or rollback."' ERR
+
 backup_configs() {
   mkdir -p "$BACKUP_DIR"
   info "Creating backup at $BACKUP_FILE..."
-  tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot
-  ok "Backup complete."
+  if tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot; then
+    ok "Backup complete."
+  else
+    error "Backup failed."
+    exit 1
+  fi
 }
 
 rollback_latest() {
@@ -43,18 +59,26 @@ rollback_latest() {
     exit 1
   fi
   info "Restoring from $latest..."
-  tar -xzpf "$latest" -C /
-  for svc in "${SERVICES[@]}"; do
-    systemctl restart "$svc"
-    ok "Restarted $svc"
-  done
-  ok "Rollback complete."
+  if tar -xzpf "$latest" -C /; then
+    for svc in "${SERVICES[@]}"; do
+      if systemctl restart "$svc"; then
+        ok "Restarted $svc"
+      else
+        warn "Failed to restart $svc"
+      fi
+    done
+    ok "Rollback complete."
+  else
+    error "Rollback failed."
+    exit 1
+  fi
 }
 
 # --- Postfix Hardening ---
 harden_postfix() {
   info "Hardening Postfix..."
-  cat <<'EOF' >> /etc/postfix/main.cf
+  {
+    cat <<'EOF' >> /etc/postfix/main.cf
 
 # === Mail Hardener additions ===
 smtpd_tls_security_level = may
@@ -67,7 +91,7 @@ disable_vrfy_command = yes
 smtpd_helo_required = yes
 EOF
 
-  cat <<'EOF' >> /etc/postfix/master.cf
+    cat <<'EOF' >> /etc/postfix/master.cf
 
 # === Hardened submission service ===
 submission inet n - y - - smtpd
@@ -75,15 +99,21 @@ submission inet n - y - - smtpd
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_client_restrictions=permit_sasl_authenticated,reject
 EOF
+  } || { error "Failed to update Postfix configs."; exit 1; }
 
-  systemctl restart postfix
-  ok "Postfix hardened and restarted."
+  if systemctl restart postfix; then
+    ok "Postfix hardened and restarted."
+  else
+    error "Failed to restart Postfix."
+    exit 1
+  fi
 }
 
 # --- Dovecot Hardening ---
 harden_dovecot() {
   info "Hardening Dovecot..."
-  cat <<'EOF' >> /etc/dovecot/conf.d/10-ssl.conf
+  {
+    cat <<'EOF' >> /etc/dovecot/conf.d/10-ssl.conf
 
 # === Mail Hardener additions ===
 ssl = required
@@ -93,18 +123,25 @@ ssl_cert = </etc/ssl/certs/ssl-cert-snakeoil.pem
 ssl_key  = </etc/ssl/private/ssl-cert-snakeoil.key
 EOF
 
-  cat <<'EOF' >> /etc/dovecot/conf.d/10-auth.conf
+    cat <<'EOF' >> /etc/dovecot/conf.d/10-auth.conf
 
 # === Mail Hardener additions ===
 disable_plaintext_auth = yes
 auth_mechanisms = plain login
 EOF
+  } || { error "Failed to update Dovecot configs."; exit 1; }
 
-  systemctl restart dovecot
-  ok "Dovecot hardened and restarted."
+  if systemctl restart dovecot; then
+    ok "Dovecot hardened and restarted."
+  else
+    error "Failed to restart Dovecot."
+    exit 1
+  fi
 }
 
 # --- Main ---
+require_root
+
 case "${1:-}" in
   --rollback)
     rollback_latest
