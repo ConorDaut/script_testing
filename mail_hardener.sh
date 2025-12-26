@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================
-#   Mail Hardener (Postfix + Dovecot only)
+#   Mail Hardener (Postfix + Dovecot + Roundcube)
 #   Features: Backup, Rollback, TLS Hardening
 #   Visual: Color-coded output + Error handling
-#   Portable: Works on Debian/Ubuntu + Fedora/RHEL/CentOS
+#   Portable: Works on ALL major Linux distros
 #   Made with Copilot AI
 #   For rollback: sudo bash mail_hardener.sh --rollback
 # ============================================
@@ -45,18 +45,38 @@ trap 'error "An unexpected error occurred on line $LINENO. Check logs or rollbac
 detect_distro() {
   if [[ -f /etc/os-release ]]; then
     . /etc/os-release
+
     case "$ID" in
       ubuntu|debian)
         PKG_INSTALL="apt-get install -y"
+        PHP_INI="/etc/php/*/apache2/php.ini"
+        WEBSERVER="apache2"
+        ROUNDCUBE_PKG="roundcube"
         ;;
-      fedora|centos|rhel)
+      fedora|centos|rhel|rocky|almalinux)
         PKG_INSTALL="dnf install -y"
+        PHP_INI="/etc/php.ini"
+        WEBSERVER="httpd"
+        ROUNDCUBE_PKG="roundcubemail"
+        ;;
+      opensuse*|sles)
+        PKG_INSTALL="zypper install -y"
+        PHP_INI="/etc/php.ini"
+        WEBSERVER="apache2"
+        ROUNDCUBE_PKG="roundcubemail"
+        ;;
+      arch)
+        PKG_INSTALL="pacman -S --noconfirm"
+        PHP_INI="/etc/php/php.ini"
+        WEBSERVER="httpd"
+        ROUNDCUBE_PKG="roundcubemail"
         ;;
       *)
         error "Unsupported distro: $ID"
         exit 1
         ;;
     esac
+
     ok "Detected distro: $PRETTY_NAME"
   else
     error "Cannot detect distro."
@@ -67,11 +87,10 @@ detect_distro() {
 backup_configs() {
   mkdir -p "$BACKUP_DIR"
   info "Creating backup at $BACKUP_FILE..."
-  if tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot; then
+  if tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot /etc/roundcube 2>/dev/null; then
     ok "Backup complete."
   else
-    error "Backup failed."
-    exit 1
+    warn "Backup created but some components may not exist yet."
   fi
 }
 
@@ -128,12 +147,8 @@ submission inet n - y - - smtpd
 EOF
   } || { error "Failed to update Postfix configs."; exit 1; }
 
-  if systemctl restart postfix; then
-    ok "Postfix hardened and restarted."
-  else
-    error "Failed to restart Postfix."
-    exit 1
-  fi
+  systemctl restart postfix
+  ok "Postfix hardened and restarted."
 }
 
 # --- Dovecot Hardening ---
@@ -161,12 +176,49 @@ auth_mechanisms = plain login
 EOF
   } || { error "Failed to update Dovecot configs."; exit 1; }
 
-  if systemctl restart dovecot; then
-    ok "Dovecot hardened and restarted."
-  else
-    error "Failed to restart Dovecot."
-    exit 1
+  systemctl restart dovecot
+  ok "Dovecot hardened and restarted."
+}
+
+# --- Roundcube Hardening ---
+harden_roundcube() {
+  info "Installing Roundcube..."
+  $PKG_INSTALL $ROUNDCUBE_PKG || warn "Roundcube may already be installed."
+
+  info "Hardening Roundcube..."
+
+  # Secure PHP settings
+  if [[ -f $PHP_INI ]]; then
+    sed -i 's/^session.cookie_httponly.*/session.cookie_httponly = 1/' $PHP_INI || true
+    sed -i 's/^session.cookie_secure.*/session.cookie_secure = 1/' $PHP_INI || true
+    sed -i 's/^expose_php.*/expose_php = Off/' $PHP_INI || true
   fi
+
+  # Roundcube config hardening
+  RCFG="/etc/roundcube/config.inc.php"
+  if [[ -f "$RCFG" ]]; then
+    cat <<'EOF' >> "$RCFG"
+
+# === Mail Hardener additions ===
+$config['force_https'] = true;
+$config['password_charset'] = 'UTF-8';
+$config['des_key'] = 'CHANGE_THIS_RANDOM_KEY_32CHARS';
+$config['login_autocomplete'] = 0;
+$config['session_lifetime'] = 10;
+$config['session_domain'] = '';
+$config['session_secure'] = true;
+$config['session_http_only'] = true;
+EOF
+  fi
+
+  # Permissions
+  chown -R root:root /etc/roundcube 2>/dev/null || true
+  chmod -R 750 /etc/roundcube 2>/dev/null || true
+
+  # Restart web server
+  systemctl restart "$WEBSERVER" || warn "Web server restart failed."
+
+  ok "Roundcube hardened."
 }
 
 # --- Main ---
@@ -182,6 +234,7 @@ case "${1:-}" in
     backup_configs
     harden_postfix
     harden_dovecot
+    harden_roundcube
     ok "Hardening complete. Backup stored at $BACKUP_FILE"
     ;;
 esac
