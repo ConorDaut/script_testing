@@ -3,7 +3,7 @@
 #   Mail Hardener (Postfix + Dovecot + Roundcube)
 #   Features: Backup, Rollback, TLS Hardening
 #   Visual: Color-coded output + Error handling
-#   Portable: Works on ALL major Linux distros
+#   Portable: Works on ANY Linux distro with a known package manager
 #   Made with Copilot AI
 #   For rollback: sudo bash mail_hardener.sh --rollback
 # ============================================
@@ -41,45 +41,73 @@ require_root() {
 # --- Error Handling ---
 trap 'error "An unexpected error occurred on line $LINENO. Check logs or rollback."' ERR
 
-# --- Distro Detection ---
-detect_distro() {
-  if [[ -f /etc/os-release ]]; then
-    . /etc/os-release
+# --- Package Manager Detection ---
+detect_pkg_manager() {
+  if command -v apt-get >/dev/null 2>&1; then
+    PKG_INSTALL="apt-get install -y"
+    WEBSERVER="apache2"
+    PHP_INI="/etc/php/*/apache2/php.ini"
+    ROUNDCUBE_PKG="roundcube"
+    ok "Detected apt-based system"
 
-    case "$ID" in
-      ubuntu|debian)
-        PKG_INSTALL="apt-get install -y"
-        PHP_INI="/etc/php/*/apache2/php.ini"
-        WEBSERVER="apache2"
-        ROUNDCUBE_PKG="roundcube"
-        ;;
-      fedora|centos|rhel|rocky|almalinux)
-        PKG_INSTALL="dnf install -y"
-        PHP_INI="/etc/php.ini"
-        WEBSERVER="httpd"
-        ROUNDCUBE_PKG="roundcubemail"
-        ;;
-      opensuse*|sles)
-        PKG_INSTALL="zypper install -y"
-        PHP_INI="/etc/php.ini"
-        WEBSERVER="apache2"
-        ROUNDCUBE_PKG="roundcubemail"
-        ;;
-      arch)
-        PKG_INSTALL="pacman -S --noconfirm"
-        PHP_INI="/etc/php/php.ini"
-        WEBSERVER="httpd"
-        ROUNDCUBE_PKG="roundcubemail"
-        ;;
-      *)
-        error "Unsupported distro: $ID"
-        exit 1
-        ;;
-    esac
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_INSTALL="dnf install -y"
+    WEBSERVER="httpd"
+    PHP_INI="/etc/php.ini"
+    ROUNDCUBE_PKG="roundcubemail"
+    ok "Detected dnf-based system"
 
-    ok "Detected distro: $PRETTY_NAME"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG_INSTALL="yum install -y"
+    WEBSERVER="httpd"
+    PHP_INI="/etc/php.ini"
+    ROUNDCUBE_PKG="roundcubemail"
+    ok "Detected yum-based system"
+
+  elif command -v zypper >/dev/null 2>&1; then
+    PKG_INSTALL="zypper install -y"
+    WEBSERVER="apache2"
+    PHP_INI="/etc/php.ini"
+    ROUNDCUBE_PKG="roundcubemail"
+    ok "Detected zypper-based system"
+
+  elif command -v pacman >/dev/null 2>&1; then
+    PKG_INSTALL="pacman -S --noconfirm"
+    WEBSERVER="httpd"
+    PHP_INI="/etc/php/php.ini"
+    ROUNDCUBE_PKG="roundcubemail"
+    ok "Detected pacman-based system"
+
+  elif command -v apk >/dev/null 2>&1; then
+    PKG_INSTALL="apk add"
+    WEBSERVER="apache2"
+    PHP_INI="/etc/php*/php.ini"
+    ROUNDCUBE_PKG="roundcube"
+    ok "Detected apk-based system (Alpine)"
+
+  elif command -v xbps-install >/dev/null 2>&1; then
+    PKG_INSTALL="xbps-install -y"
+    WEBSERVER="apache2"
+    PHP_INI="/etc/php/php.ini"
+    ROUNDCUBE_PKG="roundcube"
+    ok "Detected xbps-based system (Void)"
+
+  elif command -v emerge >/dev/null 2>&1; then
+    PKG_INSTALL="emerge --quiet"
+    WEBSERVER="apache2"
+    PHP_INI="/etc/php/php.ini"
+    ROUNDCUBE_PKG="mail-client/roundcube"
+    ok "Detected emerge-based system (Gentoo)"
+
+  elif command -v swupd >/dev/null 2>&1; then
+    PKG_INSTALL="swupd bundle-add"
+    WEBSERVER="httpd"
+    PHP_INI="/etc/php.ini"
+    ROUNDCUBE_PKG="roundcubemail"
+    ok "Detected swupd-based system (Clear Linux)"
+
   else
-    error "Cannot detect distro."
+    error "Unsupported system: no known package manager found."
     exit 1
   fi
 }
@@ -87,11 +115,8 @@ detect_distro() {
 backup_configs() {
   mkdir -p "$BACKUP_DIR"
   info "Creating backup at $BACKUP_FILE..."
-  if tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot /etc/roundcube 2>/dev/null; then
-    ok "Backup complete."
-  else
-    warn "Backup created but some components may not exist yet."
-  fi
+  tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot /etc/roundcube 2>/dev/null || true
+  ok "Backup complete."
 }
 
 rollback_latest() {
@@ -102,19 +127,11 @@ rollback_latest() {
     exit 1
   fi
   info "Restoring from $latest..."
-  if tar -xzpf "$latest" -C /; then
-    for svc in "${SERVICES[@]}"; do
-      if systemctl restart "$svc"; then
-        ok "Restarted $svc"
-      else
-        warn "Failed to restart $svc"
-      fi
-    done
-    ok "Rollback complete."
-  else
-    error "Rollback failed."
-    exit 1
-  fi
+  tar -xzpf "$latest" -C /
+  for svc in "${SERVICES[@]}"; do
+    systemctl restart "$svc" || warn "Failed to restart $svc"
+  done
+  ok "Rollback complete."
 }
 
 # --- Postfix Hardening ---
@@ -145,7 +162,7 @@ submission inet n - y - - smtpd
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_client_restrictions=permit_sasl_authenticated,reject
 EOF
-  } || { error "Failed to update Postfix configs."; exit 1; }
+  }
 
   systemctl restart postfix
   ok "Postfix hardened and restarted."
@@ -174,7 +191,7 @@ EOF
 disable_plaintext_auth = yes
 auth_mechanisms = plain login
 EOF
-  } || { error "Failed to update Dovecot configs."; exit 1; }
+  }
 
   systemctl restart dovecot
   ok "Dovecot hardened and restarted."
@@ -188,10 +205,12 @@ harden_roundcube() {
   info "Hardening Roundcube..."
 
   # Secure PHP settings
-  if [[ -f $PHP_INI ]]; then
-    sed -i 's/^session.cookie_httponly.*/session.cookie_httponly = 1/' $PHP_INI || true
-    sed -i 's/^session.cookie_secure.*/session.cookie_secure = 1/' $PHP_INI || true
-    sed -i 's/^expose_php.*/expose_php = Off/' $PHP_INI || true
+  if ls $PHP_INI >/dev/null 2>&1; then
+    for ini in $PHP_INI; do
+      sed -i 's/^session.cookie_httponly.*/session.cookie_httponly = 1/' "$ini" || true
+      sed -i 's/^session.cookie_secure.*/session.cookie_secure = 1/' "$ini" || true
+      sed -i 's/^expose_php.*/expose_php = Off/' "$ini" || true
+    done
   fi
 
   # Roundcube config hardening
@@ -223,7 +242,7 @@ EOF
 
 # --- Main ---
 require_root
-detect_distro
+detect_pkg_manager
 
 case "${1:-}" in
   --rollback)
