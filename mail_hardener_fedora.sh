@@ -128,12 +128,26 @@ install_roundcube_source() {
 
   info "Latest Roundcube version: $latest"
 
-  # Download tarball
-  cd /usr/share
-  curl -LO "https://github.com/roundcube/roundcubemail/releases/download/$latest/roundcubemail-$latest-complete.tar.gz"
+  # Prompt before deleting existing Roundcube
+  if [[ -d "$ROUNDCUBE_DIR" ]]; then
+    warn "Roundcube directory already exists at $ROUNDCUBE_DIR"
+    read -rp "Do you want to delete it and reinstall Roundcube? (yes/Yes/Y/y to confirm): " confirm
+    case "$confirm" in
+      yes|Yes|Y|y)
+        info "Deleting existing Roundcube directory..."
+        rm -rf "$ROUNDCUBE_DIR"
+        ;;
+      *)
+        info "Skipping Roundcube installation at user request."
+        return 0
+        ;;
+    esac
+  fi
 
-  # Remove old install
-  rm -rf "$ROUNDCUBE_DIR"
+  cd /usr/share
+
+  # Download tarball
+  curl -LO "https://github.com/roundcube/roundcubemail/releases/download/$latest/roundcubemail-$latest-complete.tar.gz"
 
   # Extract tarball
   tar -xzf "roundcubemail-$latest-complete.tar.gz"
