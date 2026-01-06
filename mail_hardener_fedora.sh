@@ -17,9 +17,6 @@
 #     sudo bash mail_hardener_fedora.sh --disable-roundcube
 #     sudo bash mail_hardener_fedora.sh --enable-roundcube
 #
-#   Notes:
-#     - Must be run as root.
-#     - Test setup installs services but does NOT harden them.
 # ============================================================
 
 set -euo pipefail
@@ -135,10 +132,27 @@ install_roundcube_source() {
   cd /usr/share
   curl -LO "https://github.com/roundcube/roundcubemail/releases/download/$latest/roundcubemail-$latest-complete.tar.gz"
 
-  # Extract
+  # Remove old install
   rm -rf "$ROUNDCUBE_DIR"
+
+  # Extract tarball
   tar -xzf "roundcubemail-$latest-complete.tar.gz"
-  mv "roundcubemail-$latest" "$ROUNDCUBE_DIR"
+
+  # Detect extracted directory name
+  EXTRACTED_DIR=$(tar -tzf "roundcubemail-$latest-complete.tar.gz" | head -1 | cut -d/ -f1)
+
+  if [[ ! -d "$EXTRACTED_DIR" ]]; then
+    error "Extraction failed: directory $EXTRACTED_DIR not found."
+    exit 1
+  fi
+
+  mv "$EXTRACTED_DIR" "$ROUNDCUBE_DIR"
+
+  # Verify index.php exists
+  if [[ ! -f "$ROUNDCUBE_DIR/index.php" ]]; then
+    error "Roundcube extraction incomplete: index.php missing."
+    exit 1
+  fi
 
   # Create config
   mkdir -p "$ROUNDCUBE_CONFIG_DIR"
