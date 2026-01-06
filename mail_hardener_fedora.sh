@@ -1,10 +1,31 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # ============================================================
 #   Mail Hardener for Fedora (Postfix + Dovecot + Roundcube)
-#   Fully rewritten for reliability and correctness
+#
+#   Features:
+#     - Backup & Rollback
+#     - Hardening for Postfix, Dovecot, Roundcube
+#     - Test Setup (installs all 3 services)
+#     - Roundcube Source Installer (latest version)
+#     - Roundcube Enable/Disable Options
+#     - Auto-detect Apache user
+#     - Robust extraction + move logic
+#     - Duplicate alias cleanup
+#     - SELinux relabeling
+#     - Validation of Roundcube install
+#     - Live Fedora Mode (forces conf.d loading)
+#
+#   Usage:
+#     sudo bash mail_hardener_fedora.sh
+#     sudo bash mail_hardener_fedora.sh --rollback
+#     sudo bash mail_hardener_fedora.sh --test-setup
+#     sudo bash mail_hardener_fedora.sh --enable-roundcube
+#     sudo bash mail_hardener_fedora.sh --disable-roundcube
+#     sudo bash mail_hardener_fedora.sh --live-fedora
+#
 # ============================================================
+
+set -euo pipefail
 
 # --- Colors ---
 RED=$(tput setaf 1); GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3)
@@ -58,6 +79,28 @@ detect_apache_user() {
 detect_apache_user
 
 # ============================================================
+# LIVE FEDORA FIX MODE
+# ============================================================
+fix_live_fedora() {
+  info "Applying Live Fedora compatibility fixes..."
+
+  HTTPD_CONF="/etc/httpd/conf/httpd.conf"
+
+  if ! grep -q "IncludeOptional conf.d/\*.conf" "$HTTPD_CONF"; then
+    warn "conf.d is NOT being loaded — fixing httpd.conf"
+    echo "IncludeOptional conf.d/*.conf" >> "$HTTPD_CONF"
+  else
+    ok "conf.d is already enabled."
+  fi
+
+  warn "Live Fedora uses overlay filesystems. Some operations may not persist."
+  warn "Roundcube will work, but changes may be lost after reboot."
+
+  systemctl restart httpd
+  ok "Live Fedora fixes applied."
+}
+
+# ============================================================
 # BACKUP
 # ============================================================
 backup_configs() {
@@ -74,7 +117,7 @@ backup_configs() {
 }
 
 # ============================================================
-# ROUNDCUBE INSTALLER (FULLY REWRITTEN)
+# ROUNDCUBE INSTALLER (FULLY ROBUST)
 # ============================================================
 install_roundcube() {
   info "Installing Roundcube (latest version)..."
@@ -199,6 +242,10 @@ EOF
 # MAIN
 # ============================================================
 case "${1:-}" in
+  --live-fedora)
+    fix_live_fedora
+    install_roundcube
+    ;;
   --test-setup)
     dnf install -y postfix dovecot httpd mod_ssl
     systemctl enable --now postfix dovecot httpd
@@ -213,6 +260,14 @@ case "${1:-}" in
     systemctl restart httpd
     ok "Roundcube disabled."
     ;;
+  --rollback)
+    latest=$(ls -1t "$BACKUP_DIR"/mail_backup_*.tar.gz | head -n1)
+    [[ -z "$latest" ]] && error "No backups found."
+    info "Restoring from $latest..."
+    tar -xzpf "$latest" -C /
+    for svc in "${SERVICES[@]}"; do systemctl restart "$svc"; done
+    ok "Rollback complete."
+    ;;
   *)
     backup_configs
     harden_postfix
@@ -221,4 +276,3 @@ case "${1:-}" in
     ok "Hardening complete. Backup stored at $BACKUP_FILE"
     ;;
 esac
-
