@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # ============================================
-#   Mail Hardener (Postfix + Dovecot + Roundcube)
+#   Mail Hardener (Postfix + Dovecot only)
 #   Features: Backup, Rollback, TLS Hardening
 #   Visual: Color-coded output + Error handling
-#   Portable: Works on ANY Linux distro with a known package manager
-#   Made with Copilot AI
-#   For rollback: sudo bash mail_hardener.sh --rollback
+#   Made using Copilot AI
+#   For Rollback: sudo bash mail_hardener.sh --rollback
 # ============================================
 
 set -euo pipefail
@@ -41,82 +40,15 @@ require_root() {
 # --- Error Handling ---
 trap 'error "An unexpected error occurred on line $LINENO. Check logs or rollback."' ERR
 
-# --- Package Manager Detection ---
-detect_pkg_manager() {
-  if command -v apt-get >/dev/null 2>&1; then
-    PKG_INSTALL="apt-get install -y"
-    WEBSERVER="apache2"
-    PHP_INI="/etc/php/*/apache2/php.ini"
-    ROUNDCUBE_PKG="roundcube"
-    ok "Detected apt-based system"
-
-  elif command -v dnf >/dev/null 2>&1; then
-    PKG_INSTALL="dnf install -y"
-    WEBSERVER="httpd"
-    PHP_INI="/etc/php.ini"
-    ROUNDCUBE_PKG="roundcubemail"
-    ok "Detected dnf-based system"
-
-  elif command -v yum >/dev/null 2>&1; then
-    PKG_INSTALL="yum install -y"
-    WEBSERVER="httpd"
-    PHP_INI="/etc/php.ini"
-    ROUNDCUBE_PKG="roundcubemail"
-    ok "Detected yum-based system"
-
-  elif command -v zypper >/dev/null 2>&1; then
-    PKG_INSTALL="zypper install -y"
-    WEBSERVER="apache2"
-    PHP_INI="/etc/php.ini"
-    ROUNDCUBE_PKG="roundcubemail"
-    ok "Detected zypper-based system"
-
-  elif command -v pacman >/dev/null 2>&1; then
-    PKG_INSTALL="pacman -S --noconfirm"
-    WEBSERVER="httpd"
-    PHP_INI="/etc/php/php.ini"
-    ROUNDCUBE_PKG="roundcubemail"
-    ok "Detected pacman-based system"
-
-  elif command -v apk >/dev/null 2>&1; then
-    PKG_INSTALL="apk add"
-    WEBSERVER="apache2"
-    PHP_INI="/etc/php*/php.ini"
-    ROUNDCUBE_PKG="roundcube"
-    ok "Detected apk-based system (Alpine)"
-
-  elif command -v xbps-install >/dev/null 2>&1; then
-    PKG_INSTALL="xbps-install -y"
-    WEBSERVER="apache2"
-    PHP_INI="/etc/php/php.ini"
-    ROUNDCUBE_PKG="roundcube"
-    ok "Detected xbps-based system (Void)"
-
-  elif command -v emerge >/dev/null 2>&1; then
-    PKG_INSTALL="emerge --quiet"
-    WEBSERVER="apache2"
-    PHP_INI="/etc/php/php.ini"
-    ROUNDCUBE_PKG="mail-client/roundcube"
-    ok "Detected emerge-based system (Gentoo)"
-
-  elif command -v swupd >/dev/null 2>&1; then
-    PKG_INSTALL="swupd bundle-add"
-    WEBSERVER="httpd"
-    PHP_INI="/etc/php.ini"
-    ROUNDCUBE_PKG="roundcubemail"
-    ok "Detected swupd-based system (Clear Linux)"
-
-  else
-    error "Unsupported system: no known package manager found."
-    exit 1
-  fi
-}
-
 backup_configs() {
   mkdir -p "$BACKUP_DIR"
   info "Creating backup at $BACKUP_FILE..."
-  tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot /etc/roundcube 2>/dev/null || true
-  ok "Backup complete."
+  if tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot; then
+    ok "Backup complete."
+  else
+    error "Backup failed."
+    exit 1
+  fi
 }
 
 rollback_latest() {
@@ -127,18 +59,23 @@ rollback_latest() {
     exit 1
   fi
   info "Restoring from $latest..."
-  tar -xzpf "$latest" -C /
-  for svc in "${SERVICES[@]}"; do
-    systemctl restart "$svc" || warn "Failed to restart $svc"
-  done
-  ok "Rollback complete."
+  if tar -xzpf "$latest" -C /; then
+    for svc in "${SERVICES[@]}"; do
+      if systemctl restart "$svc"; then
+        ok "Restarted $svc"
+      else
+        warn "Failed to restart $svc"
+      fi
+    done
+    ok "Rollback complete."
+  else
+    error "Rollback failed."
+    exit 1
+  fi
 }
 
 # --- Postfix Hardening ---
 harden_postfix() {
-  info "Installing Postfix..."
-  $PKG_INSTALL postfix || warn "Postfix may already be installed."
-
   info "Hardening Postfix..."
   {
     cat <<'EOF' >> /etc/postfix/main.cf
@@ -162,17 +99,18 @@ submission inet n - y - - smtpd
   -o smtpd_sasl_auth_enable=yes
   -o smtpd_client_restrictions=permit_sasl_authenticated,reject
 EOF
-  }
+  } || { error "Failed to update Postfix configs."; exit 1; }
 
-  systemctl restart postfix
-  ok "Postfix hardened and restarted."
+  if systemctl restart postfix; then
+    ok "Postfix hardened and restarted."
+  else
+    error "Failed to restart Postfix."
+    exit 1
+  fi
 }
 
 # --- Dovecot Hardening ---
 harden_dovecot() {
-  info "Installing Dovecot..."
-  $PKG_INSTALL dovecot || warn "Dovecot may already be installed."
-
   info "Hardening Dovecot..."
   {
     cat <<'EOF' >> /etc/dovecot/conf.d/10-ssl.conf
@@ -191,58 +129,18 @@ EOF
 disable_plaintext_auth = yes
 auth_mechanisms = plain login
 EOF
-  }
+  } || { error "Failed to update Dovecot configs."; exit 1; }
 
-  systemctl restart dovecot
-  ok "Dovecot hardened and restarted."
-}
-
-# --- Roundcube Hardening ---
-harden_roundcube() {
-  info "Installing Roundcube..."
-  $PKG_INSTALL $ROUNDCUBE_PKG || warn "Roundcube may already be installed."
-
-  info "Hardening Roundcube..."
-
-  # Secure PHP settings
-  if ls $PHP_INI >/dev/null 2>&1; then
-    for ini in $PHP_INI; do
-      sed -i 's/^session.cookie_httponly.*/session.cookie_httponly = 1/' "$ini" || true
-      sed -i 's/^session.cookie_secure.*/session.cookie_secure = 1/' "$ini" || true
-      sed -i 's/^expose_php.*/expose_php = Off/' "$ini" || true
-    done
+  if systemctl restart dovecot; then
+    ok "Dovecot hardened and restarted."
+  else
+    error "Failed to restart Dovecot."
+    exit 1
   fi
-
-  # Roundcube config hardening
-  RCFG="/etc/roundcube/config.inc.php"
-  if [[ -f "$RCFG" ]]; then
-    cat <<'EOF' >> "$RCFG"
-
-# === Mail Hardener additions ===
-$config['force_https'] = true;
-$config['password_charset'] = 'UTF-8';
-$config['des_key'] = 'CHANGE_THIS_RANDOM_KEY_32CHARS';
-$config['login_autocomplete'] = 0;
-$config['session_lifetime'] = 10;
-$config['session_domain'] = '';
-$config['session_secure'] = true;
-$config['session_http_only'] = true;
-EOF
-  fi
-
-  # Permissions
-  chown -R root:root /etc/roundcube 2>/dev/null || true
-  chmod -R 750 /etc/roundcube 2>/dev/null || true
-
-  # Restart web server
-  systemctl restart "$WEBSERVER" || warn "Web server restart failed."
-
-  ok "Roundcube hardened."
 }
 
 # --- Main ---
 require_root
-detect_pkg_manager
 
 case "${1:-}" in
   --rollback)
@@ -253,7 +151,6 @@ case "${1:-}" in
     backup_configs
     harden_postfix
     harden_dovecot
-    harden_roundcube
     ok "Hardening complete. Backup stored at $BACKUP_FILE"
     ;;
 esac
