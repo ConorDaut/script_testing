@@ -101,81 +101,73 @@ normalize_version() {
 }
 
 # -----------------------------
-#  Version comparison helpers
-#  Uses sort -V (coreutils) for semantic-ish compare
+#  Extract semantic versions only
 # -----------------------------
-ver_lt() {
-    # $1 < $2 ?
-    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]
+extract_versions() {
+    echo "$1" | grep -Eo '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -u
 }
 
-ver_le() {
-    # $1 <= $2 ?
-    first=$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)
-    [ "$first" = "$1" ]
-}
-
-ver_gt() {
-    # $1 > $2 ?
-    [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" != "$2" ]
-}
-
-ver_ge() {
-    # $1 >= $2 ?
-    last=$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)
-    [ "$last" = "$1" ]
-}
+# -----------------------------
+#  Version comparison helpers
+# -----------------------------
+ver_lt() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]; }
+ver_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" = "$1" ]; }
+ver_gt() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" != "$2" ]; }
+ver_ge() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }
 
 ver_between_inclusive() {
-    # $1 between $2 and $3 inclusive?
     local v="$1" low="$2" high="$3"
     ver_ge "$v" "$low" && ver_le "$v" "$high"
 }
 
 # -----------------------------
 #  Determine if user's version
-#  is vulnerable based on a
-#  summary line with version text
+#  is vulnerable based on summary line
 # -----------------------------
 is_version_vulnerable_from_line() {
     local user_version="$1"
     local line="$2"
 
-    # Extract all version-like tokens
-    mapfile -t versions < <(echo "$line" | grep -Eo '[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -u)
-
-    # No version info → can't decide
-    [ "${#versions[@]}" -eq 0 ] && return 1
-
-    # Normalize user version once
     local uv
     uv=$(normalize_version "$user_version")
 
-    # Handle common patterns
+    mapfile -t versions < <(extract_versions "$line")
+    [ "${#versions[@]}" -eq 0 ] && return 1
 
-    # 1) "before X", "prior to X", "up to X", "< X", "<= X"
-    if echo "$line" | grep -Eiq 'before|prior to|up to|<='; then
-        local bound="${versions[0]}"
-        if echo "$line" | grep -Eiq '<='; then
-            ver_le "$uv" "$bound" && return 0 || return 1
-        else
-            # before / prior to / up to → treat as <
-            ver_lt "$uv" "$bound" && return 0 || return 1
-        fi
+    # Explicit version list (Option C)
+    if echo "$line" | grep -Eiq 'versions|affected versions|include'; then
+        for v in "${versions[@]}"; do
+            if [ "$uv" = "$v" ]; then
+                return 0
+            fi
+        done
     fi
 
+    # before / prior to / up to
+    if echo "$line" | grep -Eiq 'before|prior to|up to'; then
+        local bound="${versions[0]}"
+        ver_lt "$uv" "$bound" && return 0 || return 1
+    fi
+
+    # <=
+    if echo "$line" | grep -Eq '<='; then
+        local bound="${versions[0]}"
+        ver_le "$uv" "$bound" && return 0 || return 1
+    fi
+
+    # <
     if echo "$line" | grep -Eq '<'; then
         local bound="${versions[0]}"
         ver_lt "$uv" "$bound" && return 0 || return 1
     fi
 
-    # 2) ">= X", "from X", "since X"
-    if echo "$line" | grep -Eiq '>=|from|since'; then
+    # >=
+    if echo "$line" | grep -Eq '>='; then
         local bound="${versions[0]}"
         ver_ge "$uv" "$bound" && return 0 || return 1
     fi
 
-    # 3) "X through Y", "between X and Y"
+    # through / between
     if echo "$line" | grep -Eiq 'through|between'; then
         if [ "${#versions[@]}" -ge 2 ]; then
             local low="${versions[0]}"
@@ -184,24 +176,15 @@ is_version_vulnerable_from_line() {
         fi
     fi
 
-    # 4) Fallback: if a single version is mentioned and line says "affected versions"
-    if echo "$line" | grep -Eiq 'affected version|affected versions'; then
-        local bound="${versions[0]}"
-        # Treat as "up to bound"
-        ver_le "$uv" "$bound" && return 0 || return 1
-    fi
-
-    # If we get here, we couldn't confidently decide
     return 1
 }
 
 # -----------------------------
-#  Search CVEs for service + version
-#  using summaries and version logic
+#  Version-aware CVE search
 # -----------------------------
-search_cves() {
-    read -rp "Enter service name (e.g., dovecot, apache): " service
-    read -rp "Enter version (e.g., 2.4.1-4): " version_raw
+search_cves_version_aware() {
+    read -rp "Enter service name: " service
+    read -rp "Enter version: " version_raw
 
     local version
     version=$(normalize_version "$version_raw")
@@ -210,7 +193,6 @@ search_cves() {
     yellow "Collecting CVEs for service: $service"
     echo
 
-    # Get unique CVE IDs for the service
     mapfile -t cves < <(vulnx search "$service" 2>/dev/null | grep -Eo 'CVE-[0-9]{4}-[0-9]+' | sort -u)
 
     if [ "${#cves[@]}" -eq 0 ]; then
@@ -218,19 +200,17 @@ search_cves() {
         return
     fi
 
-    green "Found ${#cves[@]} CVEs. Analyzing summaries for version impact..."
+    green "Found ${#cves[@]} CVEs. Analyzing summaries..."
     echo
 
     local vulnerable_found=0
 
     for cve in "${cves[@]}"; do
-        # Get summary for each CVE
         summary=$(vulnx id "$cve" 2>/dev/null || true)
         [ -z "$summary" ] && continue
 
-        # Look for lines that mention versions / ranges
         while IFS= read -r line; do
-            echo "$line" | grep -Eiq 'version|versions|before|prior to|through|up to|<|<=|>=|between' || continue
+            echo "$line" | grep -Eiq 'version|versions|before|prior to|through|up to|<|<=|>=|between|include' || continue
 
             if is_version_vulnerable_from_line "$version" "$line"; then
                 if [ "$vulnerable_found" -eq 0 ]; then
@@ -246,10 +226,26 @@ search_cves() {
 
     echo
     if [ "$vulnerable_found" -eq 0 ]; then
-        yellow "No CVEs clearly matched as affecting $service $version based on summary version text."
+        yellow "No CVEs matched as affecting $service $version."
     else
         green "Analysis complete."
     fi
+}
+
+# -----------------------------
+#  Simple search by service
+# -----------------------------
+search_by_service() {
+    read -rp "Enter service name: " service
+    vulnx search "$service"
+}
+
+# -----------------------------
+#  Simple search by CVE ID
+# -----------------------------
+search_by_id() {
+    read -rp "Enter CVE ID: " cve
+    vulnx id "$cve"
 }
 
 # -----------------------------
@@ -258,16 +254,20 @@ search_cves() {
 menu() {
     while true; do
         echo
-        green "=== vulnx Installer & Version-Aware CVE Search Tool ==="
+        green "=== vulnx Toolkit ==="
         echo "1) Install vulnx"
-        echo "2) Search CVEs by service + version (summary-based)"
-        echo "3) Exit"
+        echo "2) Search by service"
+        echo "3) Search by CVE ID"
+        echo "4) Version-aware vulnerability analysis"
+        echo "5) Exit"
         read -rp "Choose an option: " choice
 
         case "$choice" in
             1) install_go; fix_go_path; install_vulnx ;;
-            2) search_cves ;;
-            3) exit 0 ;;
+            2) search_by_service ;;
+            3) search_by_id ;;
+            4) search_cves_version_aware ;;
+            5) exit 0 ;;
             *) red "Invalid choice." ;;
         esac
     done
