@@ -2,8 +2,25 @@
 # ============================================
 #   Mail Hardener (Postfix + Dovecot + Roundcube)
 #   Fedora version
-#   Features: Backup, Rollback, TLS Hardening,
-#             Roundcube hardening + enable/disable
+#
+#   Usage:
+#     sudo bash mail_hardener_fedora.sh
+#       → Hardens Postfix, Dovecot, and Roundcube
+#
+#     sudo bash mail_hardener_fedora.sh --rollback
+#       → Restores the most recent backup
+#
+#     sudo bash mail_hardener_fedora.sh --disable-roundcube
+#       → Disables Roundcube Apache alias
+#
+#     sudo bash mail_hardener_fedora.sh --enable-roundcube
+#       → Re-enables Roundcube Apache alias
+#
+#   Features:
+#     - Backup & rollback of /etc/postfix, /etc/dovecot, /etc/httpd/conf.d
+#     - TLS hardening for Postfix & Dovecot (Fedora paths/syntax)
+#     - Roundcube config hardening
+#     - Roundcube enable/disable via Apache alias
 # ============================================
 
 set -euo pipefail
@@ -48,7 +65,7 @@ require_root() {
 
 trap 'error "Unexpected error on line $LINENO. Check logs or rollback."' ERR
 
-# --- Backup ---
+# --- Backup / Rollback ---
 backup_configs() {
   mkdir -p "$BACKUP_DIR"
   info "Creating backup at $BACKUP_FILE..."
@@ -62,13 +79,23 @@ backup_configs() {
 rollback_latest() {
   local latest
   latest="$(ls -1t "$BACKUP_DIR"/mail_backup_*.tar.gz 2>/dev/null | head -n1 || true)"
-  [[ -z "$latest" ]] && { error "No backups found."; exit 1; }
+  if [[ -z "$latest" ]]; then
+    error "No backups found."
+    exit 1
+  fi
 
   info "Restoring from $latest..."
-  tar -xzpf "$latest" -C / || { error "Rollback failed."; exit 1; }
+  tar -xzpf "$latest" -C / || {
+    error "Rollback failed."
+    exit 1
+  }
 
   for svc in "${SERVICES[@]}"; do
-    systemctl restart "$svc" || warn "Failed to restart $svc"
+    if systemctl restart "$svc"; then
+      ok "Restarted $svc"
+    else
+      warn "Failed to restart $svc"
+    fi
   done
 
   ok "Rollback complete."
@@ -77,6 +104,11 @@ rollback_latest() {
 # --- Postfix Hardening ---
 harden_postfix() {
   info "Hardening Postfix..."
+
+  if [[ ! -f "$POSTFIX_CERT" || ! -f "$POSTFIX_KEY" ]]; then
+    warn "Postfix TLS cert/key not found at $POSTFIX_CERT / $POSTFIX_KEY"
+    warn "Postfix will still be hardened, but TLS may not work until certs exist."
+  fi
 
   cat <<EOF >> /etc/postfix/main.cf
 
@@ -108,6 +140,12 @@ EOF
 harden_dovecot() {
   info "Hardening Dovecot..."
 
+  if [[ ! -f "$DOVECOT_CERT" || ! -f "$DOVECOT_KEY" ]]; then
+    warn "Dovecot TLS cert/key not found at $DOVECOT_CERT / $DOVECOT_KEY"
+    warn "Using Fedora defaults; ensure certs exist or adjust paths."
+  fi
+
+  # SSL block (Fedora syntax)
   cat <<EOF >> /etc/dovecot/conf.d/10-ssl.conf
 
 # === Mail Hardener additions (Fedora) ===
@@ -118,14 +156,24 @@ ssl_cert = <$DOVECOT_CERT
 ssl_key  = <$DOVECOT_KEY
 EOF
 
+  # Insert disable_plaintext_auth at top of 10-auth.conf
+  sed -i '1i # === Mail Hardener additions (Fedora)\ndisable_plaintext_auth = yes\n' \
+    /etc/dovecot/conf.d/10-auth.conf
+
+  # Append auth mechanisms
   cat <<'EOF' >> /etc/dovecot/conf.d/10-auth.conf
 
 # === Mail Hardener additions ===
-disable_plaintext_auth = yes
 auth_mechanisms = plain login
 EOF
 
-  dovecot -n >/dev/null
+  # Validate config before restart
+  if ! dovecot -n >/dev/null 2>&1; then
+    error "Dovecot config validation failed after hardening. Not restarting."
+    dovecot -n
+    exit 1
+  fi
+
   systemctl restart dovecot
   ok "Dovecot hardened."
 }
@@ -137,7 +185,7 @@ harden_roundcube() {
   local config="$ROUNDCUBE_DIR/config/config.inc.php"
 
   if [[ ! -f "$config" ]]; then
-    warn "Roundcube config not found. Is Roundcube installed?"
+    warn "Roundcube config not found at $config. Is Roundcube installed?"
     return
   fi
 
@@ -158,25 +206,39 @@ EOF
 # --- Roundcube Enable/Disable ---
 disable_roundcube() {
   info "Disabling Roundcube..."
-  [[ -f "$ROUNDCUBE_CONF" ]] && mv "$ROUNDCUBE_CONF" "$ROUNDCUBE_DISABLED"
-  systemctl restart httpd
-  ok "Roundcube disabled."
+  if [[ -f "$ROUNDCUBE_CONF" ]]; then
+    mv "$ROUNDCUBE_CONF" "$ROUNDCUBE_DISABLED"
+    systemctl restart httpd
+    ok "Roundcube disabled."
+  else
+    warn "Roundcube Apache config not found at $ROUNDCUBE_CONF"
+  fi
 }
 
 enable_roundcube() {
   info "Enabling Roundcube..."
-  [[ -f "$ROUNDCUBE_DISABLED" ]] && mv "$ROUNDCUBE_DISABLED" "$ROUNDCUBE_CONF"
-  systemctl restart httpd
-  ok "Roundcube enabled."
+  if [[ -f "$ROUNDCUBE_DISABLED" ]]; then
+    mv "$ROUNDCUBE_DISABLED" "$ROUNDCUBE_CONF"
+    systemctl restart httpd
+    ok "Roundcube enabled."
+  else
+    warn "No disabled Roundcube config found at $ROUNDCUBE_DISABLED"
+  fi
 }
 
 # --- Main ---
 require_root
 
 case "${1:-}" in
-  --rollback) rollback_latest ;;
-  --disable-roundcube) disable_roundcube ;;
-  --enable-roundcube) enable_roundcube ;;
+  --rollback)
+    rollback_latest
+    ;;
+  --disable-roundcube)
+    disable_roundcube
+    ;;
+  --enable-roundcube)
+    enable_roundcube
+    ;;
   *)
     info "Starting Mail Hardener (Fedora)..."
     backup_configs
@@ -186,3 +248,4 @@ case "${1:-}" in
     ok "Hardening complete. Backup stored at $BACKUP_FILE"
     ;;
 esac
+
