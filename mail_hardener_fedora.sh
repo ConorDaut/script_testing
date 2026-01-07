@@ -60,7 +60,7 @@ require_root() {
   if [[ "$EUID" -ne 0 ]]; then
     error "This script must be run as root."
     exit 1
-  fi
+  }
 }
 
 trap 'error "Unexpected error on line $LINENO. Check logs or rollback."' ERR
@@ -91,11 +91,7 @@ rollback_latest() {
   }
 
   for svc in "${SERVICES[@]}"; do
-    if systemctl restart "$svc"; then
-      ok "Restarted $svc"
-    else
-      warn "Failed to restart $svc"
-    fi
+    systemctl restart "$svc" || warn "Failed to restart $svc"
   done
 
   ok "Rollback complete."
@@ -104,11 +100,6 @@ rollback_latest() {
 # --- Postfix Hardening ---
 harden_postfix() {
   info "Hardening Postfix..."
-
-  if [[ ! -f "$POSTFIX_CERT" || ! -f "$POSTFIX_KEY" ]]; then
-    warn "Postfix TLS cert/key not found at $POSTFIX_CERT / $POSTFIX_KEY"
-    warn "Postfix will still be hardened, but TLS may not work until certs exist."
-  fi
 
   cat <<EOF >> /etc/postfix/main.cf
 
@@ -136,14 +127,9 @@ EOF
   ok "Postfix hardened."
 }
 
-# --- Dovecot Hardening ---
+# --- Dovecot Hardening (Fedora-safe) ---
 harden_dovecot() {
   info "Hardening Dovecot..."
-
-  if [[ ! -f "$DOVECOT_CERT" || ! -f "$DOVECOT_KEY" ]]; then
-    warn "Dovecot TLS cert/key not found at $DOVECOT_CERT / $DOVECOT_KEY"
-    warn "Using Fedora defaults; ensure certs exist or adjust paths."
-  fi
 
   # SSL block (Fedora syntax)
   cat <<EOF >> /etc/dovecot/conf.d/10-ssl.conf
@@ -156,11 +142,8 @@ ssl_cert = <$DOVECOT_CERT
 ssl_key  = <$DOVECOT_KEY
 EOF
 
-  # Insert disable_plaintext_auth at top of 10-auth.conf
-  sed -i '1i # === Mail Hardener additions (Fedora)\ndisable_plaintext_auth = yes\n' \
-    /etc/dovecot/conf.d/10-auth.conf
-
-  # Append auth mechanisms
+  # Fedora DOES NOT support disable_plaintext_auth
+  # Instead, enforce secure auth by limiting mechanisms
   cat <<'EOF' >> /etc/dovecot/conf.d/10-auth.conf
 
 # === Mail Hardener additions ===
