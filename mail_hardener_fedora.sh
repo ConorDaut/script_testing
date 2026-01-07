@@ -5,7 +5,7 @@
 #
 #   Usage:
 #     sudo bash mail_hardener_fedora.sh
-#       → Hardens Postfix, Dovecot, and Roundcube
+#       → Hardens Postfix, Dovecot (TLS only), and Roundcube
 #
 #     sudo bash mail_hardener_fedora.sh --rollback
 #       → Restores the most recent backup
@@ -35,7 +35,7 @@ RESET=$(tput sgr0 || true)
 # --- Paths ---
 BACKUP_DIR="/var/backups/mail_hardener"
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
-BACKUP_FILE="$BACKUP_DIR/mail_backup_${TIMESTAMP}.tar.gz"
+BACKUP_FILE="${BACKUP_DIR}/mail_backup_${TIMESTAMP}.tar.gz"
 
 SERVICES=(postfix dovecot httpd)
 
@@ -131,9 +131,9 @@ EOF
   ok "Postfix hardened."
 }
 
-# --- Dovecot Hardening (Fedora-safe) ---
+# --- Dovecot Hardening (TLS only, no auth tweaks) ---
 harden_dovecot() {
-  info "Hardening Dovecot..."
+  info "Hardening Dovecot (TLS only)..."
 
   cat <<EOF >> /etc/dovecot/conf.d/10-ssl.conf
 
@@ -145,20 +145,14 @@ ssl_cert = <${DOVECOT_CERT}
 ssl_key  = <${DOVECOT_KEY}
 EOF
 
-  cat <<'EOF' >> /etc/dovecot/conf.d/10-auth.conf
-
-# === Mail Hardener additions ===
-auth_mechanisms = plain login
-EOF
-
   if ! dovecot -n >/dev/null 2>&1; then
-    error "Dovecot config validation failed after hardening. Not restarting."
+    error "Dovecot config validation failed after TLS hardening. Not restarting."
     dovecot -n
     exit 1
   fi
 
   systemctl restart dovecot
-  ok "Dovecot hardened."
+  ok "Dovecot TLS hardened."
 }
 
 # --- Roundcube Hardening ---
