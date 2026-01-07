@@ -1,274 +1,184 @@
 #!/usr/bin/env bash
-# ============================================================
-#   Mail Hardener for Fedora (Postfix + Dovecot + Roundcube)
-#
-#   Features:
-#     - Backup & Rollback
-#     - Hardening for Postfix, Dovecot, Roundcube
-#     - Test Setup (installs all 3 services)
-#     - Roundcube Source Installer (latest version)
-#     - Roundcube Enable/Disable Options
-#     - Auto-detect Apache user
-#     - Robust extraction + move logic
-#     - Duplicate alias cleanup
-#     - SELinux relabeling
-#     - Validation of Roundcube install
-#     - Live Fedora Mode (forces conf.d loading)
-#
-#   Usage:
-#     sudo bash mail_hardener_fedora.sh
-#     sudo bash mail_hardener_fedora.sh --rollback
-#     sudo bash mail_hardener_fedora.sh --test-setup
-#     sudo bash mail_hardener_fedora.sh --enable-roundcube
-#     sudo bash mail_hardener_fedora.sh --disable-roundcube
-#     sudo bash mail_hardener_fedora.sh --live-fedora
-#
-# ============================================================
+# ============================================
+#   Mail Hardener (Postfix + Dovecot + Roundcube)
+#   Fedora version
+#   Features: Backup, Rollback, TLS Hardening,
+#             Roundcube hardening + enable/disable
+# ============================================
 
 set -euo pipefail
 
 # --- Colors ---
-RED=$(tput setaf 1); GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3)
-BLUE=$(tput setaf 4); RESET=$(tput sgr0)
-
-info()  { echo -e "${BLUE}[INFO]${RESET} $*"; }
-ok()    { echo -e "${GREEN}[OK]${RESET} $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${RESET} $*"; }
-error() { echo -e "${RED}[ERROR]${RESET} $*"; exit 1; }
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+YELLOW=$(tput setaf 3)
+BLUE=$(tput setaf 4)
+RESET=$(tput sgr0)
 
 # --- Paths ---
 BACKUP_DIR="/var/backups/mail_hardener"
 TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
 BACKUP_FILE="$BACKUP_DIR/mail_backup_$TIMESTAMP.tar.gz"
 
-POSTFIX_DIR="/etc/postfix"
-DOVECOT_DIR="/etc/dovecot"
-ROUNDCUBE_DIR="/usr/share/roundcubemail"
-ROUNDCUBE_DB_DIR="/var/lib/roundcubemail"
-ROUNDCUBE_ALIAS="/etc/httpd/conf.d/roundcube.conf"
-
-SSL_CERT="/etc/pki/tls/certs/localhost.crt"
-SSL_KEY="/etc/pki/tls/private/localhost.key"
-
 SERVICES=(postfix dovecot httpd)
 
-# ============================================================
-# ROOT CHECK
-# ============================================================
-if [[ $EUID -ne 0 ]]; then
-  error "This script must be run as root."
-fi
+# Fedora TLS paths
+POSTFIX_CERT="/etc/pki/tls/certs/localhost.crt"
+POSTFIX_KEY="/etc/pki/tls/private/localhost.key"
 
-# ============================================================
-# DETECT APACHE USER
-# ============================================================
-detect_apache_user() {
-  local user
-  user=$(ps aux | grep httpd | grep -v root | grep -v grep | awk '{print $1}' | head -n1 || true)
+DOVECOT_CERT="/etc/pki/dovecot/certs/dovecot.pem"
+DOVECOT_KEY="/etc/pki/dovecot/private/dovecot.pem"
 
-  if [[ -z "$user" ]]; then
-    warn "Could not detect Apache user. Defaulting to 'apache'."
-    APACHE_USER="apache"
-  else
-    APACHE_USER="$user"
+ROUNDCUBE_DIR="/usr/share/roundcubemail"
+ROUNDCUBE_CONF="/etc/httpd/conf.d/roundcube.conf"
+ROUNDCUBE_DISABLED="/etc/httpd/conf.d/roundcube.conf.disabled"
+
+# --- Utility Functions ---
+info()  { echo -e "${BLUE}[INFO]${RESET} $*"; }
+ok()    { echo -e "${GREEN}[OK]${RESET} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${RESET} $*"; }
+error() { echo -e "${RED}[ERROR]${RESET} $*"; }
+
+require_root() {
+  if [[ "$EUID" -ne 0 ]]; then
+    error "This script must be run as root."
+    exit 1
   fi
-
-  info "Apache worker user detected: $APACHE_USER"
 }
 
-detect_apache_user
+trap 'error "Unexpected error on line $LINENO. Check logs or rollback."' ERR
 
-# ============================================================
-# LIVE FEDORA FIX MODE
-# ============================================================
-fix_live_fedora() {
-  info "Applying Live Fedora compatibility fixes..."
-
-  HTTPD_CONF="/etc/httpd/conf/httpd.conf"
-
-  if ! grep -q "IncludeOptional conf.d/\*.conf" "$HTTPD_CONF"; then
-    warn "conf.d is NOT being loaded — fixing httpd.conf"
-    echo "IncludeOptional conf.d/*.conf" >> "$HTTPD_CONF"
-  else
-    ok "conf.d is already enabled."
-  fi
-
-  warn "Live Fedora uses overlay filesystems. Some operations may not persist."
-  warn "Roundcube will work, but changes may be lost after reboot."
-
-  systemctl restart httpd
-  ok "Live Fedora fixes applied."
-}
-
-# ============================================================
-# BACKUP
-# ============================================================
+# --- Backup ---
 backup_configs() {
   mkdir -p "$BACKUP_DIR"
   info "Creating backup at $BACKUP_FILE..."
-
-  tar -czpf "$BACKUP_FILE" \
-    "$POSTFIX_DIR" \
-    "$DOVECOT_DIR" \
-    "$ROUNDCUBE_DIR" \
-    "$ROUNDCUBE_ALIAS" 2>/dev/null || true
-
+  tar -czpf "$BACKUP_FILE" /etc/postfix /etc/dovecot /etc/httpd/conf.d || {
+    error "Backup failed."
+    exit 1
+  }
   ok "Backup complete."
 }
 
-# ============================================================
-# ROUNDCUBE INSTALLER (FULLY ROBUST)
-# ============================================================
-install_roundcube() {
-  info "Installing Roundcube (latest version)..."
+rollback_latest() {
+  local latest
+  latest="$(ls -1t "$BACKUP_DIR"/mail_backup_*.tar.gz 2>/dev/null | head -n1 || true)"
+  [[ -z "$latest" ]] && { error "No backups found."; exit 1; }
 
-  # Remove duplicate alias files
-  if [[ -f /etc/httpd/conf.d/roundcubemail.conf ]]; then
-    warn "Removing duplicate alias file: roundcubemail.conf"
-    rm -f /etc/httpd/conf.d/roundcubemail.conf
-  fi
+  info "Restoring from $latest..."
+  tar -xzpf "$latest" -C / || { error "Rollback failed."; exit 1; }
 
-  # Prompt before deleting existing install
-  if [[ -d "$ROUNDCUBE_DIR" ]]; then
-    warn "Roundcube directory already exists at $ROUNDCUBE_DIR"
-    read -rp "Delete and reinstall? (yes/Yes/Y/y to confirm): " confirm
-    case "$confirm" in
-      yes|Yes|Y|y)
-        info "Removing existing Roundcube directory..."
-        rm -rf "$ROUNDCUBE_DIR"
-        ;;
-      *)
-        info "Skipping Roundcube installation."
-        return 0
-        ;;
-    esac
-  fi
+  for svc in "${SERVICES[@]}"; do
+    systemctl restart "$svc" || warn "Failed to restart $svc"
+  done
 
-  dnf install -y php php-json php-mbstring php-intl php-xml php-pdo php-pdo_sqlite php-zip php-gd curl unzip
-
-  cd /usr/share
-
-  # Fetch latest version
-  latest=$(curl -s https://api.github.com/repos/roundcube/roundcubemail/releases/latest | grep tag_name | cut -d '"' -f4)
-  [[ -z "$latest" ]] && error "Failed to fetch latest Roundcube version."
-
-  info "Latest Roundcube version: $latest"
-
-  curl -LO "https://github.com/roundcube/roundcubemail/releases/download/$latest/roundcubemail-$latest-complete.tar.gz"
-
-  tar -xzf "roundcubemail-$latest-complete.tar.gz"
-
-  # Detect extracted directory
-  EXTRACTED_DIR=$(tar -tzf "roundcubemail-$latest-complete.tar.gz" | head -1 | cut -d/ -f1)
-
-  [[ ! -d "$EXTRACTED_DIR" ]] && error "Extraction failed: $EXTRACTED_DIR not found."
-
-  mv "$EXTRACTED_DIR" "$ROUNDCUBE_DIR"
-
-  # Permissions
-  chown -R "$APACHE_USER":"$APACHE_USER" "$ROUNDCUBE_DIR"
-  chmod -R 755 "$ROUNDCUBE_DIR"
-  restorecon -RF "$ROUNDCUBE_DIR"
-
-  # SQLite DB
-  mkdir -p "$ROUNDCUBE_DB_DIR"
-  chown -R "$APACHE_USER":"$APACHE_USER" "$ROUNDCUBE_DB_DIR"
-
-  # Apache alias
-  cat > "$ROUNDCUBE_ALIAS" <<EOF
-Alias /roundcubemail $ROUNDCUBE_DIR
-
-<Directory $ROUNDCUBE_DIR>
-    Options +FollowSymLinks
-    AllowOverride All
-    Require all granted
-</Directory>
-EOF
-
-  systemctl restart httpd
-
-  # Validation
-  if sudo -u "$APACHE_USER" php "$ROUNDCUBE_DIR/index.php" >/dev/null 2>&1; then
-    ok "Roundcube installed successfully."
-  else
-    error "Roundcube failed validation."
-  fi
+  ok "Rollback complete."
 }
 
-# ============================================================
-# HARDENING
-# ============================================================
+# --- Postfix Hardening ---
 harden_postfix() {
   info "Hardening Postfix..."
-  cat <<EOF >> "$POSTFIX_DIR/main.cf"
 
-# Mail Hardener additions
+  cat <<EOF >> /etc/postfix/main.cf
+
+# === Mail Hardener additions (Fedora) ===
+smtpd_tls_security_level = may
+smtpd_tls_cert_file = $POSTFIX_CERT
+smtpd_tls_key_file = $POSTFIX_KEY
+smtpd_tls_mandatory_protocols = !SSLv2,!SSLv3,!TLSv1,!TLSv1.1
+smtpd_tls_ciphers = high
+smtpd_tls_exclude_ciphers = aNULL, MD5, RC4, 3DES
 disable_vrfy_command = yes
 smtpd_helo_required = yes
-smtpd_tls_security_level = may
-smtpd_tls_cert_file = $SSL_CERT
-smtpd_tls_key_file = $SSL_KEY
 EOF
+
+  cat <<'EOF' >> /etc/postfix/master.cf
+
+# === Hardened submission service ===
+submission inet n - y - - smtpd
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+EOF
+
   systemctl restart postfix
   ok "Postfix hardened."
 }
 
+# --- Dovecot Hardening ---
 harden_dovecot() {
   info "Hardening Dovecot..."
-  cat <<EOF >> "$DOVECOT_DIR/conf.d/10-ssl.conf"
 
+  cat <<EOF >> /etc/dovecot/conf.d/10-ssl.conf
+
+# === Mail Hardener additions (Fedora) ===
 ssl = required
 ssl_min_protocol = TLSv1.2
-ssl_cert = <$SSL_CERT
-ssl_key = <$SSL_KEY
+ssl_cipher_list = HIGH:!aNULL:!MD5:!RC4:!3DES
+ssl_cert = <$DOVECOT_CERT
+ssl_key  = <$DOVECOT_KEY
 EOF
+
+  cat <<'EOF' >> /etc/dovecot/conf.d/10-auth.conf
+
+# === Mail Hardener additions ===
+disable_plaintext_auth = yes
+auth_mechanisms = plain login
+EOF
+
+  dovecot -n >/dev/null
   systemctl restart dovecot
   ok "Dovecot hardened."
 }
 
+# --- Roundcube Hardening ---
 harden_roundcube() {
   info "Hardening Roundcube..."
-  cat <<EOF >> "$ROUNDCUBE_DIR/config/config.inc.php"
 
-\$config['force_https'] = true;
-\$config['session_secure'] = true;
-\$config['enable_installer'] = false;
+  local config="$ROUNDCUBE_DIR/config/config.inc.php"
+
+  if [[ ! -f "$config" ]]; then
+    warn "Roundcube config not found. Is Roundcube installed?"
+    return
+  fi
+
+  cat <<'EOF' >> "$config"
+
+// === Mail Hardener additions ===
+$config['force_https'] = true;
+$config['login_autocomplete'] = 0;
+$config['password_charset'] = 'UTF-8';
+$config['session_lifetime'] = 10;
+$config['des_key'] = 'CHANGE_THIS_TO_A_RANDOM_KEY';
+$config['enable_installer'] = false;
 EOF
-  systemctl restart httpd
+
   ok "Roundcube hardened."
 }
 
-# ============================================================
-# MAIN
-# ============================================================
+# --- Roundcube Enable/Disable ---
+disable_roundcube() {
+  info "Disabling Roundcube..."
+  [[ -f "$ROUNDCUBE_CONF" ]] && mv "$ROUNDCUBE_CONF" "$ROUNDCUBE_DISABLED"
+  systemctl restart httpd
+  ok "Roundcube disabled."
+}
+
+enable_roundcube() {
+  info "Enabling Roundcube..."
+  [[ -f "$ROUNDCUBE_DISABLED" ]] && mv "$ROUNDCUBE_DISABLED" "$ROUNDCUBE_CONF"
+  systemctl restart httpd
+  ok "Roundcube enabled."
+}
+
+# --- Main ---
+require_root
+
 case "${1:-}" in
-  --live-fedora)
-    fix_live_fedora
-    install_roundcube
-    ;;
-  --test-setup)
-    dnf install -y postfix dovecot httpd mod_ssl
-    systemctl enable --now postfix dovecot httpd
-    install_roundcube
-    ;;
-  --enable-roundcube)
-    install_roundcube
-    ;;
-  --disable-roundcube)
-    rm -rf "$ROUNDCUBE_DIR"
-    rm -f "$ROUNDCUBE_ALIAS"
-    systemctl restart httpd
-    ok "Roundcube disabled."
-    ;;
-  --rollback)
-    latest=$(ls -1t "$BACKUP_DIR"/mail_backup_*.tar.gz | head -n1)
-    [[ -z "$latest" ]] && error "No backups found."
-    info "Restoring from $latest..."
-    tar -xzpf "$latest" -C /
-    for svc in "${SERVICES[@]}"; do systemctl restart "$svc"; done
-    ok "Rollback complete."
-    ;;
+  --rollback) rollback_latest ;;
+  --disable-roundcube) disable_roundcube ;;
+  --enable-roundcube) enable_roundcube ;;
   *)
+    info "Starting Mail Hardener (Fedora)..."
     backup_configs
     harden_postfix
     harden_dovecot
