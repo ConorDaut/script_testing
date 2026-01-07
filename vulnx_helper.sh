@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+# All Credit goes to the creators of the Vulnx tool
+# Found here: https://github.com/projectdiscovery/cvemap
+# Made using Copilot AI
+# This script is to help automatically install the tool, and make searching easier
+
 # -----------------------------
 #  Color helpers
 # -----------------------------
