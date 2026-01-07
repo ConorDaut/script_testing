@@ -43,8 +43,9 @@ SERVICES=(postfix dovecot httpd)
 POSTFIX_CERT="/etc/pki/tls/certs/localhost.crt"
 POSTFIX_KEY="/etc/pki/tls/private/localhost.key"
 
-DOVECOT_CERT="/etc/pki/dovecot/certs/dovecot.pem"
-DOVECOT_KEY="/etc/pki/dovecot/private/dovecot.pem"
+# Use Fedora’s default Dovecot certs
+DOVECOT_CERT_FILE="/etc/pki/dovecot/certs/dovecot.pem"
+DOVECOT_KEY_FILE="/etc/pki/dovecot/private/dovecot.pem"
 
 ROUNDCUBE_DIR="/usr/share/roundcubemail"
 ROUNDCUBE_CONF="/etc/httpd/conf.d/roundcube.conf"
@@ -131,7 +132,7 @@ EOF
   ok "Postfix hardened."
 }
 
-# --- Dovecot Hardening (TLS only, no auth tweaks) ---
+# --- Dovecot Hardening (TLS only, old-style options) ---
 harden_dovecot() {
   info "Hardening Dovecot (TLS only)..."
 
@@ -139,10 +140,10 @@ harden_dovecot() {
 
 # === Mail Hardener additions (Fedora) ===
 ssl = required
-ssl_min_protocol = TLSv1.2
+ssl_protocols = !SSLv2 !SSLv3 !TLSv1 !TLSv1.1
 ssl_cipher_list = HIGH:!aNULL:!MD5:!RC4:!3DES
-ssl_cert = <${DOVECOT_CERT}
-ssl_key  = <${DOVECOT_KEY}
+ssl_cert_file = ${DOVECOT_CERT_FILE}
+ssl_key_file  = ${DOVECOT_KEY_FILE}
 EOF
 
   if ! dovecot -n >/dev/null 2>&1; then
