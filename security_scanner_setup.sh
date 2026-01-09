@@ -6,16 +6,20 @@
 # Made with Claude AI
 # Description:
 #   This script installs and configures ClamAV and RKhunter on major Linux
-#   distributions. It provides easy-to-use commands for scanning systems.
+#   distributions. It provides easy-to-use options for scanning systems.
 #
 # Usage:
-#   1. Run with sudo/root: sudo bash security_scanner_setup.sh
-#   2. Follow interactive prompts to install both tools
-#   3. Use provided commands for scanning:
-#      - clamscan_file <path>     : Scan specific file/directory
-#      - clamscan_system          : Scan entire system
-#      - rkhunter_scan            : Run RKhunter security scan
-#      - rkhunter_baseline        : Establish RKhunter baseline (when clean)
+#   Installation:
+#     sudo bash security_scanner_setup.sh --install
+#
+#   Scanning operations:
+#     sudo bash security_scanner_setup.sh --clamscan-file <path>
+#     sudo bash security_scanner_setup.sh --clamscan-system
+#     sudo bash security_scanner_setup.sh --rkhunter-scan
+#     sudo bash security_scanner_setup.sh --rkhunter-baseline
+#
+#   Help:
+#     sudo bash security_scanner_setup.sh --help
 #
 # Important Notes:
 #   - Run as root/sudo (script will check)
@@ -39,7 +43,6 @@ BOLD='\033[1m'
 
 # Log directory
 LOG_DIR="/var/log/security-scans"
-SCRIPT_FUNCTIONS="/usr/local/bin"
 
 ################################################################################
 # Helper Functions
@@ -69,6 +72,40 @@ print_info() {
     echo -e "${BLUE}ℹ $1${NC}"
 }
 
+show_help() {
+    cat << EOF
+${CYAN}${BOLD}ClamAV & RKhunter Security Scanner Script${NC}
+
+${BOLD}INSTALLATION:${NC}
+  sudo bash $0 --install
+    Install ClamAV and RKhunter with updated signatures
+
+${BOLD}SCANNING OPTIONS:${NC}
+  sudo bash $0 --clamscan-file <path>
+    Scan a specific file or directory with ClamAV
+    Example: sudo bash $0 --clamscan-file /home
+
+  sudo bash $0 --clamscan-system
+    Scan the entire system with ClamAV (may take a long time)
+
+  sudo bash $0 --rkhunter-scan
+    Run RKhunter security scan for rootkits
+
+  sudo bash $0 --rkhunter-baseline
+    Establish RKhunter baseline (only after verifying system is clean!)
+
+${BOLD}OTHER OPTIONS:${NC}
+  sudo bash $0 --help
+    Display this help message
+
+${BOLD}NOTES:${NC}
+  - All operations require root/sudo privileges
+  - Scan logs are saved to: ${LOG_DIR}
+  - ${YELLOW}WARNING: Only run --rkhunter-baseline when system is verified clean!${NC}
+
+EOF
+}
+
 ################################################################################
 # Root Check
 ################################################################################
@@ -76,7 +113,8 @@ print_info() {
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         print_error "This script must be run as root or with sudo"
-        echo -e "${YELLOW}Usage: sudo $0${NC}"
+        echo -e "${YELLOW}Usage: sudo $0 [option]${NC}"
+        echo -e "${YELLOW}Use --help for more information${NC}"
         exit 1
     fi
 }
@@ -276,7 +314,7 @@ install_rkhunter() {
     echo -e "${YELLOW}║  your system is clean and free from rootkits/malware.         ║${NC}"
     echo -e "${YELLOW}║                                                                ║${NC}"
     echo -e "${YELLOW}║  To establish baseline later, use:                            ║${NC}"
-    echo -e "${YELLOW}║    ${CYAN}rkhunter_baseline${YELLOW}                                         ║${NC}"
+    echo -e "${YELLOW}║    ${CYAN}sudo bash $0 --rkhunter-baseline${YELLOW}                  ║${NC}"
     echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     
@@ -284,172 +322,167 @@ install_rkhunter() {
 }
 
 ################################################################################
-# Helper Script Creation
+# Scanning Functions
 ################################################################################
 
-create_helper_scripts() {
-    print_header "Creating Helper Scripts"
+clamscan_file() {
+    local TARGET="$1"
+    local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    local LOGFILE="$LOG_DIR/clamscan_${TIMESTAMP}.log"
     
-    # Create log directory
+    if [ -z "$TARGET" ]; then
+        print_error "Please specify a file or directory to scan"
+        echo -e "${CYAN}Usage: sudo bash $0 --clamscan-file <path>${NC}"
+        exit 1
+    fi
+    
+    if [ ! -e "$TARGET" ]; then
+        print_error "Path does not exist: $TARGET"
+        exit 1
+    fi
+    
+    # Check if ClamAV is installed
+    if ! command -v clamscan &> /dev/null; then
+        print_error "ClamAV is not installed. Run with --install first."
+        exit 1
+    fi
+    
+    # Ensure log directory exists
     mkdir -p "$LOG_DIR"
-    chmod 755 "$LOG_DIR"
     
-    # Create ClamAV file/directory scan script
-    cat > "$SCRIPT_FUNCTIONS/clamscan_file" << 'EOF'
-#!/bin/bash
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-LOG_DIR="/var/log/security-scans"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-if [ $# -eq 0 ]; then
-    echo -e "${RED}Error: Please specify a file or directory to scan${NC}"
-    echo -e "${CYAN}Usage: clamscan_file <path>${NC}"
-    exit 1
-fi
-
-TARGET="$1"
-if [ ! -e "$TARGET" ]; then
-    echo -e "${RED}Error: Path does not exist: $TARGET${NC}"
-    exit 1
-fi
-
-echo -e "${CYAN}Starting ClamAV scan of: $TARGET${NC}"
-echo -e "${CYAN}Log file: $LOG_DIR/clamscan_${TIMESTAMP}.log${NC}"
-echo ""
-
-clamscan -r -i --log="$LOG_DIR/clamscan_${TIMESTAMP}.log" "$TARGET" 2>&1 | tee -a "$LOG_DIR/clamscan_${TIMESTAMP}.log"
-
-echo ""
-echo -e "${GREEN}Scan complete. Full log saved to: $LOG_DIR/clamscan_${TIMESTAMP}.log${NC}"
-EOF
-    chmod +x "$SCRIPT_FUNCTIONS/clamscan_file"
-    print_success "Created clamscan_file command"
-    
-    # Create ClamAV system scan script
-    cat > "$SCRIPT_FUNCTIONS/clamscan_system" << 'EOF'
-#!/bin/bash
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-LOG_DIR="/var/log/security-scans"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-echo -e "${YELLOW}WARNING: Full system scan may take a long time!${NC}"
-echo -e "${CYAN}Starting full system ClamAV scan...${NC}"
-echo -e "${CYAN}Log file: $LOG_DIR/clamscan_system_${TIMESTAMP}.log${NC}"
-echo ""
-
-clamscan -r -i --exclude-dir="^/sys" --exclude-dir="^/proc" --exclude-dir="^/dev" \
-    --log="$LOG_DIR/clamscan_system_${TIMESTAMP}.log" / 2>&1 | tee -a "$LOG_DIR/clamscan_system_${TIMESTAMP}.log"
-
-echo ""
-echo -e "${GREEN}System scan complete. Full log saved to: $LOG_DIR/clamscan_system_${TIMESTAMP}.log${NC}"
-EOF
-    chmod +x "$SCRIPT_FUNCTIONS/clamscan_system"
-    print_success "Created clamscan_system command"
-    
-    # Create RKhunter scan script
-    cat > "$SCRIPT_FUNCTIONS/rkhunter_scan" << 'EOF'
-#!/bin/bash
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-LOG_DIR="/var/log/security-scans"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-
-echo -e "${CYAN}Starting RKhunter security scan...${NC}"
-echo -e "${CYAN}Log file: $LOG_DIR/rkhunter_${TIMESTAMP}.log${NC}"
-echo ""
-
-# Check if baseline exists
-if [ ! -f /var/lib/rkhunter/db/rkhunter.dat ]; then
-    echo -e "${YELLOW}WARNING: No RKhunter baseline found!${NC}"
-    echo -e "${YELLOW}This is expected if you haven't run 'rkhunter_baseline' yet.${NC}"
-    echo -e "${YELLOW}Results may show many warnings without a baseline.${NC}"
+    print_header "ClamAV File/Directory Scan"
+    echo -e "${CYAN}Target: $TARGET${NC}"
+    echo -e "${CYAN}Log file: $LOGFILE${NC}"
     echo ""
-    read -p "Continue anyway? (y/n): " -n 1 -r
+    
+    clamscan -r -i --log="$LOGFILE" "$TARGET" 2>&1 | tee -a "$LOGFILE"
+    
+    echo ""
+    if [ -f "$LOGFILE" ]; then
+        print_success "Scan complete. Full log saved to: $LOGFILE"
+    else
+        print_warning "Scan complete but log file was not created at: $LOGFILE"
+    fi
+}
+
+clamscan_system() {
+    local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    local LOGFILE="$LOG_DIR/clamscan_system_${TIMESTAMP}.log"
+    
+    # Check if ClamAV is installed
+    if ! command -v clamscan &> /dev/null; then
+        print_error "ClamAV is not installed. Run with --install first."
+        exit 1
+    fi
+    
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR"
+    
+    print_header "ClamAV Full System Scan"
+    print_warning "Full system scan may take a long time!"
+    echo -e "${CYAN}Log file: $LOGFILE${NC}"
+    echo ""
+    
+    clamscan -r -i --exclude-dir="^/sys" --exclude-dir="^/proc" --exclude-dir="^/dev" \
+        --log="$LOGFILE" / 2>&1 | tee -a "$LOGFILE"
+    
+    echo ""
+    if [ -f "$LOGFILE" ]; then
+        print_success "System scan complete. Full log saved to: $LOGFILE"
+    else
+        print_warning "Scan complete but log file was not created at: $LOGFILE"
+    fi
+}
+
+rkhunter_scan() {
+    local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    local LOGFILE="$LOG_DIR/rkhunter_${TIMESTAMP}.log"
+    
+    # Check if RKhunter is installed
+    if ! command -v rkhunter &> /dev/null; then
+        print_error "RKhunter is not installed. Run with --install first."
+        exit 1
+    fi
+    
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR"
+    
+    print_header "RKhunter Security Scan"
+    echo -e "${CYAN}Log file: $LOGFILE${NC}"
+    echo ""
+    
+    # Check if baseline exists
+    if [ ! -f /var/lib/rkhunter/db/rkhunter.dat ]; then
+        print_warning "No RKhunter baseline found!"
+        echo -e "${YELLOW}This is expected if you haven't run '--rkhunter-baseline' yet.${NC}"
+        echo -e "${YELLOW}Results may show many warnings without a baseline.${NC}"
+        echo ""
+        read -p "Continue anyway? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 0
+        fi
+    fi
+    
+    rkhunter --check --skip-keypress --report-warnings-only --log "$LOGFILE" 2>&1 | tee -a "$LOGFILE"
+    
+    echo ""
+    if [ -f "$LOGFILE" ]; then
+        print_success "RKhunter scan complete. Full log saved to: $LOGFILE"
+        echo -e "${CYAN}Review the log for any warnings or suspicious findings.${NC}"
+    else
+        print_warning "Scan complete but log file was not created at: $LOGFILE"
+    fi
+}
+
+rkhunter_baseline() {
+    # Check if RKhunter is installed
+    if ! command -v rkhunter &> /dev/null; then
+        print_error "RKhunter is not installed. Run with --install first."
+        exit 1
+    fi
+    
+    print_header "RKhunter Baseline Establishment"
+    echo ""
+    echo -e "${RED}WARNING: Only run this if you are CONFIDENT your system is clean!${NC}"
+    echo ""
+    echo -e "${CYAN}This will create a baseline of your system's binaries and files.${NC}"
+    echo -e "${CYAN}Future scans will compare against this baseline.${NC}"
+    echo ""
+    echo -e "${YELLOW}Have you verified your system is free from malware/rootkits?${NC}"
+    read -p "Are you sure you want to proceed? (yes/no): " -r
     echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+
+    if [[ ! $REPLY == "yes" ]]; then
+        print_info "Baseline creation cancelled."
         exit 0
     fi
-fi
 
-rkhunter --check --skip-keypress --report-warnings-only --log "$LOG_DIR/rkhunter_${TIMESTAMP}.log" 2>&1 | tee -a "$LOG_DIR/rkhunter_${TIMESTAMP}.log"
-
-echo ""
-echo -e "${GREEN}RKhunter scan complete. Full log saved to: $LOG_DIR/rkhunter_${TIMESTAMP}.log${NC}"
-echo -e "${CYAN}Review the log for any warnings or suspicious findings.${NC}"
-EOF
-    chmod +x "$SCRIPT_FUNCTIONS/rkhunter_scan"
-    print_success "Created rkhunter_scan command"
-    
-    # Create RKhunter baseline script
-    cat > "$SCRIPT_FUNCTIONS/rkhunter_baseline" << 'EOF'
-#!/bin/bash
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-echo -e "${YELLOW}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${YELLOW}║              RKhunter Baseline Establishment                   ║${NC}"
-echo -e "${YELLOW}╚════════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${RED}WARNING: Only run this if you are CONFIDENT your system is clean!${NC}"
-echo ""
-echo -e "${CYAN}This will create a baseline of your system's binaries and files.${NC}"
-echo -e "${CYAN}Future scans will compare against this baseline.${NC}"
-echo ""
-echo -e "${YELLOW}Have you verified your system is free from malware/rootkits?${NC}"
-read -p "Are you sure you want to proceed? (yes/no): " -r
-echo
-
-if [[ ! $REPLY == "yes" ]]; then
-    echo -e "${CYAN}Baseline creation cancelled.${NC}"
-    exit 0
-fi
-
-echo ""
-echo -e "${CYAN}Updating RKhunter data files...${NC}"
-rkhunter --update
-
-echo -e "${CYAN}Creating system baseline...${NC}"
-rkhunter --propupd
-
-if [ $? -eq 0 ]; then
     echo ""
-    echo -e "${GREEN}✓ RKhunter baseline established successfully!${NC}"
-    echo -e "${CYAN}You can now run 'rkhunter_scan' to check your system.${NC}"
-else
-    echo ""
-    echo -e "${RED}✗ Error establishing baseline${NC}"
-    exit 1
-fi
-EOF
-    chmod +x "$SCRIPT_FUNCTIONS/rkhunter_baseline"
-    print_success "Created rkhunter_baseline command"
-    
-    print_success "All helper scripts created successfully"
+    print_info "Updating RKhunter data files..."
+    rkhunter --update
+
+    print_info "Creating system baseline..."
+    rkhunter --propupd
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        print_success "RKhunter baseline established successfully!"
+        echo -e "${CYAN}You can now run 'sudo bash $0 --rkhunter-scan' to check your system.${NC}"
+    else
+        echo ""
+        print_error "Error establishing baseline"
+        exit 1
+    fi
 }
 
 ################################################################################
 # Main Installation Function
 ################################################################################
 
-main() {
+run_installation() {
     clear
     print_header "ClamAV & RKhunter Security Scanner Setup"
-    
-    # Check root privileges
-    check_root
     
     # Detect distribution
     detect_distro
@@ -484,20 +517,26 @@ main() {
         install_rkhunter
     fi
     
-    echo ""
-    
-    # Create helper scripts
-    create_helper_scripts
+    # Create log directory
+    mkdir -p "$LOG_DIR"
+    chmod 755 "$LOG_DIR"
     
     # Final summary
     echo ""
     print_header "Installation Complete!"
     echo ""
-    print_success "Available commands:"
-    echo -e "  ${CYAN}clamscan_file <path>${NC}     - Scan specific file or directory"
-    echo -e "  ${CYAN}clamscan_system${NC}          - Scan entire system (takes time)"
-    echo -e "  ${CYAN}rkhunter_scan${NC}            - Run RKhunter security scan"
-    echo -e "  ${CYAN}rkhunter_baseline${NC}        - Establish RKhunter baseline (when clean)"
+    print_success "Available options:"
+    echo -e "  ${CYAN}sudo bash $0 --clamscan-file <path>${NC}"
+    echo -e "    Scan specific file or directory"
+    echo ""
+    echo -e "  ${CYAN}sudo bash $0 --clamscan-system${NC}"
+    echo -e "    Scan entire system (takes time)"
+    echo ""
+    echo -e "  ${CYAN}sudo bash $0 --rkhunter-scan${NC}"
+    echo -e "    Run RKhunter security scan"
+    echo ""
+    echo -e "  ${CYAN}sudo bash $0 --rkhunter-baseline${NC}"
+    echo -e "    Establish RKhunter baseline (when clean)"
     echo ""
     print_info "Scan logs are saved to: $LOG_DIR"
     echo ""
@@ -505,5 +544,38 @@ main() {
     echo ""
 }
 
-# Run main function
-main
+################################################################################
+# Main Script Logic
+################################################################################
+
+# Check root privileges
+check_root
+
+# Parse command line arguments
+case "${1}" in
+    --install)
+        run_installation
+        ;;
+    --clamscan-file)
+        clamscan_file "$2"
+        ;;
+    --clamscan-system)
+        clamscan_system
+        ;;
+    --rkhunter-scan)
+        rkhunter_scan
+        ;;
+    --rkhunter-baseline)
+        rkhunter_baseline
+        ;;
+    --help|-h|"")
+        show_help
+        exit 0
+        ;;
+    *)
+        print_error "Unknown option: $1"
+        echo ""
+        show_help
+        exit 1
+        ;;
+esac
