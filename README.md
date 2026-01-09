@@ -1,6 +1,6 @@
 # script_testing
 Used for testing scripts.
-Most code made using Copilot AI.
+Most code made using Copilot AI or Claude AI.
 - create_backup_admin_user.sh works
 - fail2ban_script.sh works
 - harden_accounts.sh does not work as intended / needs more work
