@@ -14,8 +14,11 @@
 #
 #   Scanning operations:
 #     sudo bash security_scanner_setup.sh --clamscan-file <path>
+#     sudo bash security_scanner_setup.sh --clamscan-file <path> --no-log
 #     sudo bash security_scanner_setup.sh --clamscan-system
+#     sudo bash security_scanner_setup.sh --clamscan-system --no-log
 #     sudo bash security_scanner_setup.sh --rkhunter-scan
+#     sudo bash security_scanner_setup.sh --rkhunter-scan --no-log
 #     sudo bash security_scanner_setup.sh --rkhunter-baseline
 #
 #   Help:
@@ -25,7 +28,7 @@
 #   - Run as root/sudo (script will check)
 #   - For RKhunter: DO NOT run baseline until you're confident system is clean
 #   - Signature databases are updated during installation
-#   - Scan results saved to /var/log/security-scans/
+#   - Scan results saved to /var/log/security-scans/ (unless --no-log is used)
 #
 # Supported Distributions:
 #   Ubuntu/Debian, Fedora, RHEL/CentOS/Rocky/Alma, Arch, openSUSE, Kali
@@ -73,37 +76,45 @@ print_info() {
 }
 
 show_help() {
-    cat << EOF
-${CYAN}${BOLD}ClamAV & RKhunter Security Scanner Script${NC}
-
-${BOLD}INSTALLATION:${NC}
-  sudo bash $0 --install
-    Install ClamAV and RKhunter with updated signatures
-
-${BOLD}SCANNING OPTIONS:${NC}
-  sudo bash $0 --clamscan-file <path>
-    Scan a specific file or directory with ClamAV
-    Example: sudo bash $0 --clamscan-file /home
-
-  sudo bash $0 --clamscan-system
-    Scan the entire system with ClamAV (may take a long time)
-
-  sudo bash $0 --rkhunter-scan
-    Run RKhunter security scan for rootkits
-
-  sudo bash $0 --rkhunter-baseline
-    Establish RKhunter baseline (only after verifying system is clean!)
-
-${BOLD}OTHER OPTIONS:${NC}
-  sudo bash $0 --help
-    Display this help message
-
-${BOLD}NOTES:${NC}
-  - All operations require root/sudo privileges
-  - Scan logs are saved to: ${LOG_DIR}
-  - ${YELLOW}WARNING: Only run --rkhunter-baseline when system is verified clean!${NC}
-
-EOF
+    echo -e "${CYAN}${BOLD}ClamAV & RKhunter Security Scanner Script${NC}"
+    echo ""
+    echo -e "${BOLD}INSTALLATION:${NC}"
+    echo "  sudo bash $0 --install"
+    echo "    Install ClamAV and RKhunter with updated signatures"
+    echo ""
+    echo -e "${BOLD}SCANNING OPTIONS:${NC}"
+    echo "  sudo bash $0 --clamscan-file <path>"
+    echo "    Scan a specific file or directory with ClamAV"
+    echo "    Example: sudo bash $0 --clamscan-file /home"
+    echo ""
+    echo "  sudo bash $0 --clamscan-file <path> --no-log"
+    echo "    Scan without creating a log file (display summary only)"
+    echo ""
+    echo "  sudo bash $0 --clamscan-system"
+    echo "    Scan the entire system with ClamAV (may take a long time)"
+    echo ""
+    echo "  sudo bash $0 --clamscan-system --no-log"
+    echo "    Scan entire system without creating a log file"
+    echo ""
+    echo "  sudo bash $0 --rkhunter-scan"
+    echo "    Run RKhunter security scan for rootkits"
+    echo ""
+    echo "  sudo bash $0 --rkhunter-scan --no-log"
+    echo "    Run RKhunter scan without creating a log file"
+    echo ""
+    echo "  sudo bash $0 --rkhunter-baseline"
+    echo "    Establish RKhunter baseline (only after verifying system is clean!)"
+    echo ""
+    echo -e "${BOLD}OTHER OPTIONS:${NC}"
+    echo "  sudo bash $0 --help"
+    echo "    Display this help message"
+    echo ""
+    echo -e "${BOLD}NOTES:${NC}"
+    echo "  - All operations require root/sudo privileges"
+    echo "  - Scan logs are saved to: ${LOG_DIR}"
+    echo "  - Use --no-log flag to avoid creating log files (saves storage)"
+    echo -e "  - ${YELLOW}WARNING: Only run --rkhunter-baseline when system is verified clean!${NC}"
+    echo ""
 }
 
 ################################################################################
@@ -327,12 +338,13 @@ install_rkhunter() {
 
 clamscan_file() {
     local TARGET="$1"
+    local NO_LOG="$2"
     local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     local LOGFILE="$LOG_DIR/clamscan_${TIMESTAMP}.log"
     
     if [ -z "$TARGET" ]; then
         print_error "Please specify a file or directory to scan"
-        echo -e "${CYAN}Usage: sudo bash $0 --clamscan-file <path>${NC}"
+        echo -e "${CYAN}Usage: sudo bash $0 --clamscan-file <path> [--no-log]${NC}"
         exit 1
     fi
     
@@ -347,25 +359,30 @@ clamscan_file() {
         exit 1
     fi
     
-    # Ensure log directory exists
-    mkdir -p "$LOG_DIR"
-    
     print_header "ClamAV File/Directory Scan"
     echo -e "${CYAN}Target: $TARGET${NC}"
-    echo -e "${CYAN}Log file: $LOGFILE${NC}"
-    echo ""
     
-    clamscan -r -i --log="$LOGFILE" "$TARGET" 2>&1 | tee -a "$LOGFILE"
-    
-    echo ""
-    if [ -f "$LOGFILE" ]; then
-        print_success "Scan complete. Full log saved to: $LOGFILE"
+    if [ "$NO_LOG" == "--no-log" ]; then
+        echo -e "${YELLOW}Running without log file (summary only)${NC}"
+        echo ""
+        clamscan -r -i "$TARGET"
     else
-        print_warning "Scan complete but log file was not created at: $LOGFILE"
+        # Ensure log directory exists
+        mkdir -p "$LOG_DIR"
+        echo -e "${CYAN}Log file: $LOGFILE${NC}"
+        echo ""
+        clamscan -r -i --log="$LOGFILE" "$TARGET" 2>&1 | tee -a "$LOGFILE"
+        echo ""
+        if [ -f "$LOGFILE" ]; then
+            print_success "Scan complete. Full log saved to: $LOGFILE"
+        else
+            print_warning "Scan complete but log file was not created at: $LOGFILE"
+        fi
     fi
 }
 
 clamscan_system() {
+    local NO_LOG="$1"
     local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     local LOGFILE="$LOG_DIR/clamscan_system_${TIMESTAMP}.log"
     
@@ -375,26 +392,31 @@ clamscan_system() {
         exit 1
     fi
     
-    # Ensure log directory exists
-    mkdir -p "$LOG_DIR"
-    
     print_header "ClamAV Full System Scan"
     print_warning "Full system scan may take a long time!"
-    echo -e "${CYAN}Log file: $LOGFILE${NC}"
-    echo ""
     
-    clamscan -r -i --exclude-dir="^/sys" --exclude-dir="^/proc" --exclude-dir="^/dev" \
-        --log="$LOGFILE" / 2>&1 | tee -a "$LOGFILE"
-    
-    echo ""
-    if [ -f "$LOGFILE" ]; then
-        print_success "System scan complete. Full log saved to: $LOGFILE"
+    if [ "$NO_LOG" == "--no-log" ]; then
+        echo -e "${YELLOW}Running without log file (summary only)${NC}"
+        echo ""
+        clamscan -r -i --exclude-dir="^/sys" --exclude-dir="^/proc" --exclude-dir="^/dev" /
     else
-        print_warning "Scan complete but log file was not created at: $LOGFILE"
+        # Ensure log directory exists
+        mkdir -p "$LOG_DIR"
+        echo -e "${CYAN}Log file: $LOGFILE${NC}"
+        echo ""
+        clamscan -r -i --exclude-dir="^/sys" --exclude-dir="^/proc" --exclude-dir="^/dev" \
+            --log="$LOGFILE" / 2>&1 | tee -a "$LOGFILE"
+        echo ""
+        if [ -f "$LOGFILE" ]; then
+            print_success "System scan complete. Full log saved to: $LOGFILE"
+        else
+            print_warning "Scan complete but log file was not created at: $LOGFILE"
+        fi
     fi
 }
 
 rkhunter_scan() {
+    local NO_LOG="$1"
     local TIMESTAMP=$(date +%Y%m%d_%H%M%S)
     local LOGFILE="$LOG_DIR/rkhunter_${TIMESTAMP}.log"
     
@@ -404,12 +426,7 @@ rkhunter_scan() {
         exit 1
     fi
     
-    # Ensure log directory exists
-    mkdir -p "$LOG_DIR"
-    
     print_header "RKhunter Security Scan"
-    echo -e "${CYAN}Log file: $LOGFILE${NC}"
-    echo ""
     
     # Check if baseline exists
     if [ ! -f /var/lib/rkhunter/db/rkhunter.dat ]; then
@@ -424,14 +441,23 @@ rkhunter_scan() {
         fi
     fi
     
-    rkhunter --check --skip-keypress --report-warnings-only --log "$LOGFILE" 2>&1 | tee -a "$LOGFILE"
-    
-    echo ""
-    if [ -f "$LOGFILE" ]; then
-        print_success "RKhunter scan complete. Full log saved to: $LOGFILE"
-        echo -e "${CYAN}Review the log for any warnings or suspicious findings.${NC}"
+    if [ "$NO_LOG" == "--no-log" ]; then
+        echo -e "${YELLOW}Running without log file (summary only)${NC}"
+        echo ""
+        rkhunter --check --skip-keypress --report-warnings-only
     else
-        print_warning "Scan complete but log file was not created at: $LOGFILE"
+        # Ensure log directory exists
+        mkdir -p "$LOG_DIR"
+        echo -e "${CYAN}Log file: $LOGFILE${NC}"
+        echo ""
+        rkhunter --check --skip-keypress --report-warnings-only --log "$LOGFILE" 2>&1 | tee -a "$LOGFILE"
+        echo ""
+        if [ -f "$LOGFILE" ]; then
+            print_success "RKhunter scan complete. Full log saved to: $LOGFILE"
+            echo -e "${CYAN}Review the log for any warnings or suspicious findings.${NC}"
+        else
+            print_warning "Scan complete but log file was not created at: $LOGFILE"
+        fi
     fi
 }
 
@@ -529,16 +555,25 @@ run_installation() {
     echo -e "  ${CYAN}sudo bash $0 --clamscan-file <path>${NC}"
     echo -e "    Scan specific file or directory"
     echo ""
+    echo -e "  ${CYAN}sudo bash $0 --clamscan-file <path> --no-log${NC}"
+    echo -e "    Scan without creating a log file"
+    echo ""
     echo -e "  ${CYAN}sudo bash $0 --clamscan-system${NC}"
     echo -e "    Scan entire system (takes time)"
+    echo ""
+    echo -e "  ${CYAN}sudo bash $0 --clamscan-system --no-log${NC}"
+    echo -e "    Scan entire system without log file"
     echo ""
     echo -e "  ${CYAN}sudo bash $0 --rkhunter-scan${NC}"
     echo -e "    Run RKhunter security scan"
     echo ""
+    echo -e "  ${CYAN}sudo bash $0 --rkhunter-scan --no-log${NC}"
+    echo -e "    Run RKhunter scan without log file"
+    echo ""
     echo -e "  ${CYAN}sudo bash $0 --rkhunter-baseline${NC}"
     echo -e "    Establish RKhunter baseline (when clean)"
     echo ""
-    print_info "Scan logs are saved to: $LOG_DIR"
+    print_info "Scan logs are saved to: $LOG_DIR (unless --no-log is used)"
     echo ""
     print_warning "Remember: Establish RKhunter baseline only when system is verified clean!"
     echo ""
@@ -557,13 +592,25 @@ case "${1}" in
         run_installation
         ;;
     --clamscan-file)
-        clamscan_file "$2"
+        if [ "$3" == "--no-log" ]; then
+            clamscan_file "$2" "--no-log"
+        else
+            clamscan_file "$2"
+        fi
         ;;
     --clamscan-system)
-        clamscan_system
+        if [ "$2" == "--no-log" ]; then
+            clamscan_system "--no-log"
+        else
+            clamscan_system
+        fi
         ;;
     --rkhunter-scan)
-        rkhunter_scan
+        if [ "$2" == "--no-log" ]; then
+            rkhunter_scan "--no-log"
+        else
+            rkhunter_scan
+        fi
         ;;
     --rkhunter-baseline)
         rkhunter_baseline
