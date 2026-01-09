@@ -9,5 +9,6 @@ Most code made using Copilot AI or Claude AI.
 - mail_hardener_fedora.sh does not work as intended / needs more work
 - master_hardening.sh works (limited use)
 - opencart_hardener.sh works for the most part on Ubuntu (403 error related to test setup)
+- security_scanner_setup.sh works on Ubuntu. Needs more testing on other distros
 - setup-firejail-apache.sh does not work as intended / needs more work
 - vulnx_helper.sh works
